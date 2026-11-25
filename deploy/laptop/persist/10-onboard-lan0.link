@@ -1,0 +1,5 @@
+# Built-in RJ45 (r8169): fixed name outside the kernel's eth* range so it never competes with the dongle for eth1.
+[Match]
+MACAddress=6c:0b:5e:1a:99:56
+[Link]
+Name=lan0

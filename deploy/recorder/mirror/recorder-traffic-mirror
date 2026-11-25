@@ -1,0 +1,39 @@
+#!/bin/sh
+# Mirror every packet in and out of the recorder host's LAN (eno1) and Wi-Fi (HomeWiFi) interfaces to gpuserver's Suricata
+# (IDS, detect-only) through a GRE tunnel. The tunnel's own packets are excluded so it can't loop.
+# Usage: recorder-traffic-mirror start|stop|status
+set -eu
+LOCAL=${LOCAL:-192.0.2.20}
+REMOTE=${REMOTE:-192.0.2.30}          # gpuserver on the 192.0.2.0/24 segment
+TUN=${TUN:-mirror0}
+IFACES=${IFACES:-"eno1 wlx00c0cab8fc2a"}
+
+start() {
+    ip link del "$TUN" 2>/dev/null || true
+    # nopmtudisc + ignore-df: full-size mirrored frames get fragmented on the wire instead of dropped
+    ip link add "$TUN" type gretap local "$LOCAL" remote "$REMOTE" key 710 ttl 8 nopmtudisc ignore-df
+    ip link set "$TUN" mtu 9000 arp off up
+    sysctl -qw "net.ipv6.conf.$TUN.disable_ipv6=1" 2>/dev/null || true   # transmit-only: no ARP/NDP chatter
+    for dev in $IFACES; do
+        tc qdisc del dev "$dev" clsact 2>/dev/null || true
+        tc qdisc add dev "$dev" clsact
+        for dir in ingress egress; do
+            # never mirror the mirror: GRE to/from gpuserver passes untouched
+            tc filter add dev "$dev" "$dir" prio 1 protocol ip flower ip_proto 47 dst_ip "$REMOTE" action pass
+            tc filter add dev "$dev" "$dir" prio 2 protocol ip flower ip_proto 47 src_ip "$REMOTE" action pass
+            tc filter add dev "$dev" "$dir" prio 9 matchall action mirred egress mirror dev "$TUN"
+        done
+    done
+}
+
+stop() {
+    for dev in $IFACES; do tc qdisc del dev "$dev" clsact 2>/dev/null || true; done
+    ip link del "$TUN" 2>/dev/null || true
+}
+
+case "${1:-}" in
+    start) start ;;
+    stop) stop ;;
+    status) ip -s link show "$TUN"; for dev in $IFACES; do echo "== $dev"; tc -s filter show dev "$dev" ingress | grep -E "mirred|Sent" ; done ;;
+    *) echo "usage: $0 start|stop|status" >&2; exit 2 ;;
+esac

@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Camera Map Calibration</title>
+<!--
+  Camera calibration from an aerial photo: pair points in the camera frame with the same points on USGS NAIP
+  orthoimagery (public domain, ~30 cm/px, fetched by THIS browser straight from imagery.nationalmap.gov; the
+  coordinates you type never go to the camera system). Ground heights come from USGS 3DEP (1 m) the same way.
+  Output: points JSON for `python -m squirrel_guard.calibrate points --json FILE` (world = local east/north/up
+  metres around the coordinates you enter; put those on the camera's position).
+-->
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1f2933; --muted: #5f6b7a; --line: #d9dee5; --accent: #2563eb;
+    --cam: #e11d48; --map: #059669; --warn: #b45309;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg: #12161c; --panel: #1b2129; --text: #e5e9ef; --muted: #9aa5b4; --line: #2c3540;
+      --accent: #60a5fa; --cam: #fb7185; --map: #34d399; --warn: #fbbf24; }
+  }
+  :root[data-theme="dark"] { --bg: #12161c; --panel: #1b2129; --text: #e5e9ef; --muted: #9aa5b4; --line: #2c3540;
+    --accent: #60a5fa; --cam: #fb7185; --map: #34d399; --warn: #fbbf24; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { padding: 14px 16px 6px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p.lead { margin: 0; color: var(--muted); max-width: 980px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: end; padding: 10px 16px; }
+  label { display: flex; flex-direction: column; font-size: 12px; color: var(--muted); gap: 3px; }
+  input, select, button { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+  input[type=number] { width: 120px; }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .panes { display: grid; grid-template-columns: 1.6fr 1fr; gap: 12px; padding: 0 16px; }
+  @media (max-width: 900px) { .panes { grid-template-columns: 1fr; } }
+  .pane { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; min-width: 0; }
+  .pane h2 { font-size: 13px; margin: 0 0 6px; display: flex; justify-content: space-between; gap: 8px; }
+  .stage { position: relative; overflow: auto; max-height: 70vh; border-radius: 4px; background: #000; }
+  .stage img { display: block; width: 100%; height: auto; cursor: crosshair; user-select: none; -webkit-user-drag: none; }
+  .stage.zoom img { width: 200%; }
+  .mk { position: absolute; transform: translate(-50%, -50%); width: 18px; height: 18px; border-radius: 50%; border: 2px solid #fff;
+        font: bold 10px/14px system-ui; text-align: center; color: #fff; pointer-events: none; box-shadow: 0 0 0 1px #0008; }
+  .mk.cam { background: var(--cam); } .mk.map { background: var(--map); } .mk.pending { outline: 3px solid var(--warn); }
+  .hint { color: var(--muted); font-size: 12px; font-weight: normal; }
+  #status { color: var(--muted); }
+  #status.warn { color: var(--warn); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { border-bottom: 1px solid var(--line); padding: 4px 6px; text-align: left; }
+  td input { width: 70px; padding: 2px 4px; }
+  .out { padding: 12px 16px 24px; display: grid; grid-template-columns: 1.2fr 1fr; gap: 12px; }
+  @media (max-width: 900px) { .out { grid-template-columns: 1fr; } }
+  textarea { width: 100%; height: 220px; font: 12px/1.4 ui-monospace, monospace; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+  code { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 1px 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Camera map calibration</h1>
+  <p class="lead">Enter the camera's position (in Google Maps: right-click the spot where the camera is mounted, click the
+  coordinates to copy them) and load the aerial photo. Then click a point in the <b style="color:var(--cam)">camera frame</b>
+  and the same point on the <b style="color:var(--map)">aerial photo</b>; repeat for 6&ndash;10 points spread across the view
+  that sit on the ground (path corners, driveway edges, post bases). The aerial photo and heights come straight from USGS to
+  this browser.</p>
+</header>
+<div class="bar">
+  <label>Camera position (lat, lon) <input id="ll" placeholder="39.7392, -104.9903" size="24"></label>
+  <label>Aerial source <select id="srcmap">
+    <option value="https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPPlus/ImageServer">USGS NAIP (30–60 cm, nationwide)</option>
+    <option value="custom">County / city GIS (paste ArcGIS service URL)…</option>
+  </select></label>
+  <label id="customlbl" hidden>ArcGIS ImageServer or MapServer URL <input id="custom" size="46" placeholder="https://…/arcgis/rest/services/…/ImageServer"></label>
+  <label>Half-width (m) <input id="rad" type="number" value="35" min="10" max="200" step="5"></label>
+  <label>Mount height above ground (m, optional) <input id="mh" type="number" step="0.05" placeholder="e.g. 2.6"></label>
+  <button id="loadmap" class="primary">Load aerial photo</button>
+  <label>Camera frame <select id="src">
+    <option value="go2rtc">Live, full resolution (streams)</option>
+    <option value="portal">Live snapshot (640×360)</option>
+    <option value="file">Image file…</option>
+  </select></label>
+  <input id="file" type="file" accept="image/*" hidden>
+  <button id="loadcam">Load frame</button>
+  <span id="status">Waiting for coordinates.</span>
+</div>
+<div class="panes">
+  <section class="pane"><h2>Camera frame <span class="hint" id="camsize"></span>
+    <label style="flex-direction:row;align-items:center;gap:4px"><input type="checkbox" id="zc"> zoom</label></h2>
+    <div class="stage" id="camstage"><img id="camimg" alt="camera frame"></div></section>
+  <section class="pane"><h2>Aerial photo (USGS NAIP) <span class="hint" id="mapinfo"></span>
+    <label style="flex-direction:row;align-items:center;gap:4px"><input type="checkbox" id="zm"> zoom</label></h2>
+    <div class="stage" id="mapstage"><img id="mapimg" alt="aerial photo" crossorigin="anonymous"></div></section>
+</div>
+<div class="out">
+  <section class="pane"><h2>Point pairs <span class="hint">height = metres above the ground (0 for ground points)</span></h2>
+    <table><thead><tr><th>#</th><th>Camera px</th><th>East, North (m)</th><th>Ground (m)</th><th>Height</th><th></th></tr></thead>
+    <tbody id="rows"></tbody></table>
+    <p class="hint">At least 6 pairs; spread them out (near and far, left and right). Undo a half-made pair with Esc.</p></section>
+  <section class="pane"><h2>Result <span><button id="dl">Download JSON</button> <button id="copy">Copy</button></span></h2>
+    <textarea id="json" readonly></textarea>
+    <p class="hint">Then: <code>python -m squirrel_guard.calibrate points --json calib_points.json</code></p></section>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const R = 6378137, merc = (lat, lon) => [R * lon * Math.PI / 180, R * Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360))];
+const SIZE = 1024;
+let geo = null, pairs = [], pending = null, nextId = 1;
+const status = (t, warn) => { $('status').textContent = t; $('status').className = warn ? 'warn' : ''; };
+
+function parseLL() {
+  const m = $('ll').value.match(/(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)/);
+  if (!m) return null;
+  const lat = +m[1], lon = +m[2];
+  return Math.abs(lat) <= 90 && Math.abs(lon) <= 180 ? { lat, lon } : null;
+}
+
+async function elevation(mx, my) {
+  // 3DEP identify (getSamples on this service times out); value is metres as a string, "NoData" outside coverage
+  const u = 'https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/identify?geometryType=esriGeometryPoint'
+    + `&geometry=${encodeURIComponent(JSON.stringify({ x: mx, y: my, spatialReference: { wkid: 3857 } }))}`
+    + '&returnGeometry=false&returnCatalogItems=false&f=json';
+  try {
+    const v = parseFloat((await (await fetch(u)).json()).value);
+    return Number.isFinite(v) ? v : null;
+  } catch { return null; }
+}
+
+$('loadmap').onclick = async () => {
+  const ll = parseLL();
+  if (!ll) { status('Enter coordinates as "lat, lon", e.g. 39.7392, -104.9903.', true); return; }
+  const r = Math.max(10, Math.min(200, +$('rad').value || 35)), k = Math.cos(ll.lat * Math.PI / 180);
+  const [x0, y0] = merc(ll.lat, ll.lon), h = r / k;               // mercator half-span for r ground metres
+  const bbox = [x0 - h, y0 - h, x0 + h, y0 + h];
+  // any ArcGIS REST imagery: ImageServer -> /exportImage, MapServer -> /export (same bbox/size parameters)
+  let base = $('srcmap').value === 'custom' ? $('custom').value.trim() : $('srcmap').value;
+  base = base.replace(/\/(exportImage|export)\/?(\?.*)?$/i, '').replace(/\/$/, '').replace(/\?.*$/, '');
+  if (!/^https:\/\/.+\/(ImageServer|MapServer)$/i.test(base)) { status('Paste an ArcGIS REST URL ending in /ImageServer or /MapServer.', true); return; }
+  const op = /ImageServer$/i.test(base) ? 'exportImage' : 'export';
+  const url = `${base}/${op}?bbox=${bbox.join(',')}&bboxSR=3857&imageSR=3857&size=${SIZE},${SIZE}&format=jpg&transparent=false&f=image`;
+  status('Loading aerial photo… (USGS ground heights can take up to ~30 s each; the table fills in on its own)');
+  geo = { lat: ll.lat, lon: ll.lon, x0, y0, k, r, bbox, url, elev0: null,
+          source: /nationalmap\.gov/.test(base) ? 'USGS NAIP (public domain)' : base.replace(/^https:\/\//, '') + ' (check its licence)' };
+  $('mapimg').onload = () => status(`Aerial photo loaded: ${2 * r} m across, shown at ${(2 * r / SIZE * 100).toFixed(0)} cm per pixel (real detail depends on the source: NAIP 30–60 cm, county imagery often 7–15 cm).`);
+  $('mapimg').onerror = () => status('Aerial photo failed to load (outside the service area, the service blocks other sites, or it is down).', true);
+  $('mapimg').src = url;
+  $('mapinfo').textContent = `${2 * r} m across · north up`;
+  geo.elev0 = await elevation(x0, y0);
+  pairs.forEach(redraw); update();
+};
+
+function camURL() {
+  const s = $('src').value;
+  const cam = (new URLSearchParams(location.search).get('camera') || 'frontyard').replace(/[^A-Za-z0-9_-]/g, '');
+  if (s === 'go2rtc') return 'https://streams.cam.example.org/api/frame.jpeg?src=' + cam + '&t=' + Date.now();
+  if (s === 'portal') return 'https://cam.example.org/live.jpg?t=' + Date.now();
+  return null;
+}
+$('srcmap').onchange = () => { $('customlbl').hidden = $('srcmap').value !== 'custom'; };
+$('loadcam').onclick = () => {
+  if ($('src').value === 'file') { $('file').click(); return; }
+  $('camimg').src = camURL();
+};
+$('file').onchange = () => { const f = $('file').files[0]; if (f) $('camimg').src = URL.createObjectURL(f); };
+$('camimg').onload = () => { $('camsize').textContent = `${$('camimg').naturalWidth}×${$('camimg').naturalHeight}`; update(); };
+$('camimg').onerror = () => status('Camera frame failed to load (signed in? try the snapshot or an image file).', true);
+$('zc').onchange = () => { $('camstage').classList.toggle('zoom', $('zc').checked); pairs.forEach(redraw); redrawPending(); };
+$('zm').onchange = () => { $('mapstage').classList.toggle('zoom', $('zm').checked); pairs.forEach(redraw); };
+
+const natural = (img, ev) => { const b = img.getBoundingClientRect();
+  return [(ev.clientX - b.left) / b.width * img.naturalWidth, (ev.clientY - b.top) / b.height * img.naturalHeight]; };
+
+function marker(stage, img, px, cls, label) {
+  const el = document.createElement('div');
+  el.className = 'mk ' + cls; el.textContent = label;
+  el.style.left = (px[0] / img.naturalWidth * img.clientWidth) + 'px';
+  el.style.top = (px[1] / img.naturalHeight * img.clientHeight) + 'px';
+  stage.appendChild(el);
+  return el;
+}
+function redraw(p) {
+  (p.els || []).forEach((e) => e.remove());
+  p.els = [marker($('camstage'), $('camimg'), p.cam, 'cam', p.id)];
+  if (p.mapPx && $('mapimg').naturalWidth) p.els.push(marker($('mapstage'), $('mapimg'), p.mapPx, 'map', p.id));
+}
+function redrawPending() {
+  if (pending && pending.el) pending.el.remove();
+  if (pending) pending.el = marker($('camstage'), $('camimg'), pending.cam, 'cam pending', nextId);
+}
+
+$('camimg').onclick = (ev) => {
+  if (!$('camimg').naturalWidth) return;
+  if (pending && pending.el) pending.el.remove();
+  pending = { cam: natural($('camimg'), ev) };
+  redrawPending();
+  status(`Point ${nextId}: now click the same spot on the aerial photo.`);
+};
+$('mapimg').onclick = async (ev) => {
+  if (!geo || !$('mapimg').naturalWidth) return;
+  if (!pending) { status('Click the point in the camera frame first.', true); return; }
+  const mp = natural($('mapimg'), ev), [xmin, ymin, xmax, ymax] = geo.bbox;
+  const mx = xmin + mp[0] / $('mapimg').naturalWidth * (xmax - xmin), my = ymax - mp[1] / $('mapimg').naturalHeight * (ymax - ymin);
+  const p = { id: nextId++, cam: pending.cam, mapPx: mp, east: (mx - geo.x0) * geo.k, north: (my - geo.y0) * geo.k, ground: null, h: 0 };
+  pending.el.remove(); pending = null;
+  pairs.push(p); redraw(p); update();
+  status(`Point ${p.id} added. ${pairs.length < 6 ? (6 - pairs.length) + ' more needed.' : 'Enough points; more spread = better.'}`);
+  const e = await elevation(mx, my);
+  p.ground = e != null && geo.elev0 != null ? e - geo.elev0 : null;
+  update();
+};
+document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && pending) { pending.el.remove(); pending = null; status('Cancelled.'); } });
+
+function update() {
+  const tb = $('rows'); tb.innerHTML = '';
+  pairs.forEach((p) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${p.id}</td><td>${p.cam[0].toFixed(0)}, ${p.cam[1].toFixed(0)}</td><td>${p.east.toFixed(2)}, ${p.north.toFixed(2)}</td>`
+      + `<td>${p.ground == null ? '–' : p.ground.toFixed(2)}</td><td><input type="number" step="0.05" value="${p.h}"></td><td><button>✕</button></td>`;
+    tr.querySelector('input').onchange = (e) => { p.h = +e.target.value || 0; update(); };
+    tr.querySelector('button').onclick = () => { (p.els || []).forEach((e) => e.remove()); pairs = pairs.filter((q) => q !== p); update(); };
+    tb.appendChild(tr);
+  });
+  const W = $('camimg').naturalWidth, H = $('camimg').naturalHeight;
+  const mh = parseFloat($('mh').value);
+  const out = {
+    frame_size: [W || null, H || null],
+    points: pairs.map((p) => ({ label: `p${p.id}`, px: [+p.cam[0].toFixed(1), +p.cam[1].toFixed(1)],
+      world: [+p.east.toFixed(3), +p.north.toFixed(3), +(((p.ground || 0) + p.h)).toFixed(3)] })),
+    geo: geo && { origin: { lat: geo.lat, lon: geo.lon, elev_m: geo.elev0 }, frame: 'local east/north/up metres; origin = the entered position',
+      aerial: { url: geo.url, extent_m: [-geo.r, -geo.r, geo.r, geo.r], source: geo.source } },
+    camera_hint: Number.isFinite(mh) ? { position_m: [0, 0, mh], note: 'entered by hand' } : null,
+  };
+  $('json').value = JSON.stringify(out, null, 1);
+}
+$('dl').onclick = () => { const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([$('json').value], { type: 'application/json' })); a.download = 'calib_points.json'; a.click(); };
+$('copy').onclick = () => navigator.clipboard && navigator.clipboard.writeText($('json').value).then(() => status('Copied.'));
+$('mh').onchange = update;
+window.addEventListener('resize', () => { pairs.forEach(redraw); redrawPending(); });
+update();
+</script>
+</body>
+</html>

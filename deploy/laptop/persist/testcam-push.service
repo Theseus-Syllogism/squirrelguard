@@ -1,0 +1,9 @@
+[Unit]
+Description=Laptop USB webcam -> recorder host go2rtc (testcam), squirrel-guard 3rd camera
+After=network-online.target
+[Service]
+ExecStart=%h/src/squirrel-guard/deploy/laptop/testcam-push.sh
+Restart=always
+RestartSec=10
+[Install]
+WantedBy=default.target

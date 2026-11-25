@@ -1,0 +1,219 @@
+# Frigate 0.18 config for the Wyze v3 (Thingino) "frontyard" camera.
+# Secrets: {FRIGATE_*} placeholders come from the untracked .env next to compose.yaml.
+
+mqtt:
+  enabled: true
+  host: 192.0.2.20            # Mosquitto on the recorder host
+  port: 1883
+  user: frigate
+  password: '{FRIGATE_MQTT_PASSWORD}'
+  topic_prefix: frigate
+
+detectors:
+  ov:
+    type: openvino
+    device: GPU               # Intel UHD 770
+  ov_cpu:                     # second detector in parallel: at 1280x720 the iGPU alone saturated (~80%, frames skipped)
+    type: openvino
+    device: CPU               # i9-12900K, plenty of headroom
+
+model:                        # YOLOv8s trained on Open Images V7 (601 classes, squirrel = 488)
+  path: /config/model_cache/yolov8s-oiv7.onnx
+  labelmap_path: /config/model_cache/oiv7-labelmap.txt
+  model_type: yolo-generic
+  width: 640
+  height: 640
+  input_tensor: nchw
+  input_dtype: float
+
+ffmpeg:
+  hwaccel_args: preset-vaapi  # decode on the iGPU
+
+objects:
+  genai:                      # written descriptions of people/vehicles by the local Qwen (searchable)
+    enabled: true
+    objects: [person, car, truck, motorcycle]
+    object_prompts:
+      person: >-
+        Describe what this person is doing across these images in 1-2 plain sentences:
+        clothing (colours,
+        types), anything carried or pushed, actions (walking, waiting, looking at
+        the house, trying a door,
+        delivering), and where they go. Describe only what is visible. Do not guess
+        identity, name, ethnicity
+        or intent.
+      car: >-
+        Describe this vehicle in one sentence: colour, body type, make/model if clearly
+        visible, and what it
+        does (passing, parking, stopping, dropping someone off). Do not read out the
+        licence plate.
+  track: [squirrel, cat, dog, bird, rabbit, raccoon, skunk, person, car, truck, 
+        bus, motorcycle]
+  filters:
+    squirrel:                 # small, fast animals: accept lower scores than Frigate's defaults
+      min_score: 0.35
+      threshold: 0.55
+    person:                   # Open Images scores people lower than COCO models (man/woman/boy/girl are
+      min_score: 0.35         # remapped to person in oiv7-labelmap.txt); Frigate's 0.5/0.7 defaults miss most
+      threshold: 0.5
+
+review:
+  genai:                      # short summary of each alert by the local Qwen
+    enabled: true
+    alerts: true
+    detections: false
+  alerts:
+    labels: [squirrel, person]          # both show on the Alerts page
+  detections:
+    labels: [cat, dog, bird, rabbit, raccoon, skunk, car, truck, bus, motorcycle]   # vehicles: not alerts
+
+lpr:                          # licence plate recognition on car/motorcycle events (no outside lookups)
+  enabled: true
+  model_size: small           # CPU
+  device: CPU
+
+snapshots:
+  enabled: true
+  bounding_box: true
+  retain:
+    default: 30
+
+  timestamp: true
+  crop: true
+cameras:
+  frontyard:
+    enabled: false            # OFF since 2026-11-12: the Wyze v3 is repurposed as the desk/easel note camera
+                              # (user). Re-enable: true here + "frontyard" in squirrel-guard cameras + recorder host recorder-1
+    lpr:
+      enabled: true
+    ffmpeg:
+      inputs:
+        - path: 
+            rtsp://camstack:{FRIGATE_RTSP_PASSWORD}@192.0.2.20:8554/frontyard       # main 1080p stream
+          input_args: preset-rtsp-restream
+          roles: [detect, record]
+    detect:
+      enabled: true
+      width: 1280               # 1280x720 (not the 640x360 sub-stream): the synthetic-squirrel test caught a
+      height: 720               # ~100 px squirrel here; at 640x360 nothing under ~220 px was detected
+      fps: 25                 # = stream rate (max)
+    record:                   # event clips only: the recorder host already records continuously
+      enabled: true
+      continuous: {days: 0}
+      motion: {days: 0}
+      alerts:                 # squirrels and people
+        pre_capture: 5
+        post_capture: 10
+        retain: {days: 14, mode: all}       # whole event window: no gaps when the animal holds still
+      detections:             # other animals
+        pre_capture: 5
+        post_capture: 10
+        retain: {days: 7, mode: all}
+
+
+  v4:                         # Wyze Cam v4 (WYZEC4) on Thingino raptor, 2560x1440; via the recorder host go2rtc restream
+    ffmpeg:
+      inputs:
+        - path: rtsp://camstack:{FRIGATE_RTSP_PASSWORD}@192.0.2.20:8554/v4
+          input_args: preset-rtsp-restream
+          roles: [detect, record]
+    detect:
+      enabled: true
+      width: 2560             # NATIVE resolution: people walking along the street beside the parked Ram/Expedition
+      height: 1440            # are only ~40-80 px tall at 1280x720; Frigate's 640 px regions crop native pixels, so
+      fps: 12                 # they reach the model at twice the size. 12 not 25: at 2560x1440 the v4 frame
+                              # process tops out at ~9-10 fps and dropped ~16 fps at random; 12 is steady
+    motion:
+      frame_height: 180       # finer motion grid (default 100) so a small distant walker still forms a contour
+      contour_area: 8         # (default 10)
+      mask:                   # on-screen overlays that change every second (0.18: named masks)
+        timestamp: {coordinates: '0,0,0.14,0,0.14,0.035,0,0.035'}
+        title: {coordinates: '0.45,0,0.55,0,0.55,0.035,0.45,0.035'}
+        uptime: {coordinates: '0.86,0,1,0,1,0.035,0.86,0.035'}
+        logo: {coordinates: '0.94,0.96,1,0.96,1,1,0.94,1'}
+    record:                   # event clips only: the recorder host records continuously (recorder-v4)
+      enabled: true
+      continuous: {days: 0}
+      motion: {days: 0}
+      alerts: {pre_capture: 5, post_capture: 10, retain: {days: 14, mode: all}}
+      detections: {pre_capture: 5, post_capture: 10, retain: {days: 7, mode: all}}
+
+  frontyard_test:             # TEST camera: live feed + synthetic squirrels; separate history from frontyard
+    enabled: false            # switch on together with: docker compose up -d mediamtx squirrel-test
+    ffmpeg:
+      inputs:
+        - path: rtsp://mediamtx:8554/frontyard_squirrel_test   # published by the squirrel-test container
+          input_args: preset-rtsp-generic
+          roles: [detect, record]
+    detect:
+      enabled: true
+      width: 1280               # higher than frontyard's 640x360: Frigate's 640 px regions then zoom in on small objects
+      height: 720
+      fps: 5
+    record:
+      enabled: true
+      continuous: {days: 0}
+      motion: {days: 0}
+      alerts: {pre_capture: 3, post_capture: 5, retain: {days: 2, mode: all}}
+      detections: {pre_capture: 3, post_capture: 5, retain: {days: 2, mode: all}}
+    snapshots:
+      retain: {default: 2}
+
+  testcam:                    # SECOND camera for multi-camera testing: laptop USB webcam pushed to the recorder host go2rtc
+    enabled: false            # OFF since 2026-11-12 (user: indoor webcams are not to feed Frigate/squirrel-guard).
+                              # To use again: true here + "testcam" in squirrel-guard cameras + testcam-push.service
+    ffmpeg:                   # (deploy/laptop/testcam-push.sh); same basement, different viewpoint
+      inputs:
+        - path: rtsp://camstack:{FRIGATE_RTSP_PASSWORD}@192.0.2.20:8554/testcam
+          input_args: preset-rtsp-restream
+          roles: [detect, record]
+    detect:
+      enabled: true
+      width: 1280
+      height: 720
+      fps: 15                 # = webcam push rate (max)
+    record:
+      enabled: true
+      continuous: {days: 0}
+      motion: {days: 0}
+      alerts: {pre_capture: 3, post_capture: 5, retain: {days: 3, mode: all}}
+      detections: {pre_capture: 3, post_capture: 5, retain: {days: 3, mode: all}}
+    snapshots:
+      retain: {default: 3}
+face_recognition:            # names only ENROLLED (consenting) people: Face Library in Frigate; nobody else is identified
+  enabled: true
+  model_size: small           # CPU model; "large" is more accurate but wants a GPU
+  min_area: 750               # ~27x27 px face minimum (the v4's 2560x1440 reaches further than the v3)
+  recognition_threshold: 0.9  # Frigate default: only confident matches become a name (sub label)
+  unknown_score: 0.8
+  save_attempts: 100          # recent unrecognised face crops kept for training in the Face Library, then rotated out
+
+# Natural-language search: CLIP-style image embeddings (Jina, local) + the descriptions above.
+semantic_search:
+  enabled: true
+  reindex: false
+  model_size: small
+genai:
+  local_qwen:                 # Qwen3.8 27B + vision projector (llama-qwen27b, zzz-vision.conf), one slot shared with opencode
+    provider: openai
+    base_url: http://203.0.113.20:5920/v1
+    api_key: local
+    model: qwen3.8-27b-turbo-mtp
+    roles: [descriptions, chat]
+
+version: 0.18-0
+
+# Single sign-on: Authelia on the recorder host signs people in; its nginx (frigate.cam.example.org) is the only client
+# allowed to reach :8971 (frigate-8971-guard.service) and proves itself with X-Proxy-Secret.
+auth:
+  enabled: false
+proxy:
+  auth_secret: '{FRIGATE_PROXY_SECRET}'
+  header_map:
+    user: remote-user
+    role: remote-groups
+    role_map:
+      admin: [admins]
+  separator: ','
+  default_role: viewer
+  logout_url: https://auth.cam.example.org/logout

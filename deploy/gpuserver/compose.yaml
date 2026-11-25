@@ -1,0 +1,99 @@
+# Frigate on gpuserver (203.0.113.20 / 192.0.2.30). Deployed to /mnt/media-extra/frigate.
+# Detection: OpenVINO on the Intel UHD 770 iGPU (renderD128); the AMD GPUs stay with the LLM.
+# Input: go2rtc on the recorder host (192.0.2.20:8554). gpuserver cannot reach the camera's 198.51.100.0/24 itself:
+# its wg1 WireGuard interface owns that range.
+name: frigate
+
+services:
+  frigate:
+    image: ghcr.io/blakeblackshear/frigate:0.18.2
+    container_name: frigate
+    restart: unless-stopped
+    shm_size: "512mb"
+    security_opt:
+      - apparmor=docker-frigate   # docker-default + unix sockets; see docker-frigate.apparmor
+    mem_limit: 6g
+    devices:
+      - /dev/dri/renderD128:/dev/dri/renderD128   # Intel iGPU only (00:02.0)
+    env_file: .env      # FRIGATE_RTSP_PASSWORD, FRIGATE_MQTT_PASSWORD (never committed)
+    environment:
+      TZ: America/Denver
+    ports:
+      - "8971:8971"     # authenticated UI/API; the unauthenticated :5000 is not published
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./config:/config
+      - ./media:/media/frigate
+      - type: tmpfs
+        target: /tmp/cache
+        tmpfs: {size: 1000000000}
+
+  squirrel-guard:
+    build: ./squirrel-guard
+    image: squirrel-guard:local
+    restart: unless-stopped
+    env_file: sg.env    # SG_MQTT_HOST/USER/PASS (never committed)
+    volumes:
+      - /etc/localtime:/etc/localtime:ro   # local time in logs and event timestamps
+      - ./config/model_cache/yolov8s-oiv7.onnx:/models/yolov8s-oiv7.onnx:ro   # same model as Frigate, for boxed clips
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # Qwen verifier on this host, port 5922
+    depends_on: [frigate]
+    mem_limit: 1g
+    cpus: 6
+
+  profiler:
+    # Person sightings: re-ID fingerprint + LLM attributes -> MQTT -> recorder host identity matching
+    image: squirrel-guard:local
+    restart: unless-stopped
+    command: ["python", "-u", "-m", "squirrel_guard.profiler", "-c", "/app/config.toml"]
+    env_file: sg.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./config/model_cache/yolov8s-oiv7.onnx:/models/yolov8s-oiv7.onnx:ro
+      - ./config/model_cache/osnet_x0_25_msmt17.onnx:/models/osnet_x0_25_msmt17.onnx:ro
+      - ./config/model_cache/dinov2_vits14_224.onnx:/models/dinov2_vits14_224.onnx:ro
+      - ./config/model_cache/yolov8s-pose.onnx:/models/yolov8s-pose.onnx:ro
+      - ./config/model_cache/stgcnpp_ntu120_hrnet_j.onnx:/models/stgcnpp_ntu120_hrnet_j.onnx:ro
+      - ./config/model_cache/gaitbase_grew.onnx:/models/gaitbase_grew.onnx:ro
+      - ./config/model_cache/rtmw:/models/rtmw:ro              # RTMW whole-body keypoints for the IK rig (Apache-2.0)
+      - ./config/model_cache/smpl:/models/smpl:ro              # SMPL neutral for the rig body (non-commercial: local only)
+      - ./config/model_cache/yolov8s-seg-320.onnx:/models/yolov8s-seg-320.onnx:ro
+      - ./config/model_cache/yolov8s-worldv2-sg.onnx:/models/yolov8s-worldv2-sg.onnx:ro
+      # face identification (face_enabled): InspireFace pack, academic/non-commercial licence, never in images/repos
+      - ./config/model_cache/inspireface/Megatron:/models/inspireface/Megatron:ro
+      - ./config/model_cache/adaface:/models/adaface:ro   # AdaFace IR-101 (WebFace12M weights: non-commercial, local only)
+      # PULC attributes (scripts/export_pulc.py): copy BOTH files into config/model_cache before `up`, or docker
+      # creates empty directories here and the profiler just logs "PULC model unusable" and runs without them
+      - ./config/model_cache/pulc_person_attribute.onnx:/models/pulc_person_attribute.onnx:ro
+      - ./config/model_cache/pulc_vehicle_attribute.onnx:/models/pulc_vehicle_attribute.onnx:ro
+      - ./config/calib:/calib                  # camera calibration for heights (calibrate.py writes here)
+    depends_on: [frigate]
+    mem_limit: 4608m                   # (+1 GB for the IK rig: torch + RTMW l-m) pose + re-ID + DINOv2 + gait (GaitBase + seg) + actions + objects (YOLO-World) + faces (InspireFace ~1 GB)
+    cpus: 4
+
+  squirrel-test:
+    # TEST ONLY: live main stream + synthetic squirrel cutout/silhouette -> Frigate camera frontyard_test.
+    # Stop with: docker compose stop squirrel-test  (and set frontyard_test enabled: false in config.yml)
+    image: squirrel-guard:local          # reuses the image's ffmpeg
+    restart: unless-stopped
+    entrypoint: ["/bin/bash", "/test/squirrel-test.sh", "rtsp://mediamtx:8554/frontyard_squirrel_test"]
+    env_file: .env                       # FRIGATE_RTSP_PASSWORD (recorder host go2rtc)
+    volumes:
+      - ./config/test:/test:ro
+    depends_on: [mediamtx]
+    mem_limit: 512m
+    cpus: 4
+
+  mediamtx:
+    # TEST ONLY: RTSP relay for the synthetic stream (compose network only; no ports published)
+    image: bluenviron/mediamtx:1.21.3
+    restart: unless-stopped
+    environment:
+      MTX_RTMP: "no"
+      MTX_HLS: "no"
+      MTX_WEBRTC: "no"
+      MTX_SRT: "no"
+    mem_limit: 128m

@@ -1,0 +1,27 @@
+# Detector in a container: `./sg runtime docker`, then `./sg setup` (or: docker compose up -d --build).
+# config.toml must exist first (a missing file would be mounted as an empty folder).
+name: squirrel-guard
+services:
+  detector:
+    image: squirrel-guard-detector
+    build: { context: ., target: runtime }
+    restart: unless-stopped
+    user: "${SG_UID:-1000}:${SG_GID:-1000}"      # owner of ./data on the host
+    env_file: [{ path: .env, required: false }]   # SG_RTSP_URL and other secrets; never baked into the image
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+      - ./models:/app/models:ro
+      - ./sounds:/app/sounds:ro
+      - ./data:/app/data
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    # Deterrent sound from inside the container needs the host's audio socket; see docs/console.md.
+
+  export:                                         # one-off: writes ./models/yolov8s-oiv7.onnx
+    profiles: [tools]
+    image: squirrel-guard-export
+    build: { context: ., target: export }
+    user: "${SG_UID:-1000}:${SG_GID:-1000}"
+    volumes: ["./models:/app/models"]

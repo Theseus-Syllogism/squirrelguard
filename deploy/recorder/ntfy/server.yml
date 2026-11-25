@@ -1,0 +1,12 @@
+base-url: "http://198.51.100.20:8090"   # recorder host HomeWiFi address: phones on HomeWiFi reach it; Suricata exempts 198.51.100.0/24
+listen-http: ":80"
+cache-file: "/var/cache/ntfy/cache.db"
+cache-duration: "72h"
+attachment-cache-dir: "/var/cache/ntfy/attachments"
+attachment-total-size-limit: "2G"
+attachment-file-size-limit: "10M"
+attachment-expiry-duration: "72h"
+auth-file: "/var/lib/ntfy/user.db"
+auth-default-access: "deny-all"
+enable-signup: false
+enable-login: true

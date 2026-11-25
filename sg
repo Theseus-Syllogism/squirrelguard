@@ -1,0 +1,8 @@
+#!/bin/sh
+# squirrel-guard console launcher: `./sg` (terminal UI), `./sg setup`, `./sg gui`, `./sg --help`.
+# Uses the project's own Python once it exists, the system's before that (the installer needs only the standard library).
+here=$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0")")" && pwd)
+py="$here/.venv/bin/python"
+[ -x "$py" ] || py=$(command -v python3) || { echo "sg: Python 3.11 or newer is required" >&2; exit 1; }
+"$py" -c 'import sys; sys.exit(sys.version_info < (3, 11))' || { echo "sg: Python 3.11 or newer is required" >&2; exit 1; }
+PYTHONPATH="$here${PYTHONPATH:+:$PYTHONPATH}" exec "$py" -m squirrel_guard.console "$@"

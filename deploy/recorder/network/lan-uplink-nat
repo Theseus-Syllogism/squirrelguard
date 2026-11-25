@@ -1,0 +1,24 @@
+#!/bin/sh
+# recorder host: backup internet gateway for gpuserver (192.0.2.30) out through the Wi-Fi uplink (HomeWiFi).
+# Only gpuserver's host address is forwarded + masqueraded. Installed 2026-11-14 by lan-uplink-nat.service.
+#   lan-uplink-nat          add the rules (idempotent)
+#   lan-uplink-nat --remove remove them (rollback)
+set -eu
+SRC=192.0.2.30
+LAN=eno1
+WAN=$(ip -o route show default | awk '/dev wlx/{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1); exit}')
+WAN=${WAN:-wlx00c0cab8fc2a}
+add() { iptables -C "$@" 2>/dev/null || iptables -I "$@"; }
+del() { while iptables -C "$@" 2>/dev/null; do iptables -D "$@"; done; }
+F1="DOCKER-USER -i $LAN -o $WAN -s $SRC -j ACCEPT"
+F2="DOCKER-USER -i $WAN -o $LAN -d $SRC -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT"
+N1="POSTROUTING -s $SRC -o $WAN -j MASQUERADE"
+if [ "${1:-}" = --remove ]; then
+    del $F1; del $F2; iptables -t nat -C $N1 2>/dev/null && iptables -t nat -D $N1 || true
+    echo "removed"; exit 0
+fi
+sysctl -q -w net.ipv4.ip_forward=1
+iptables -N DOCKER-USER 2>/dev/null || true
+add $F2; add $F1
+iptables -t nat -C $N1 2>/dev/null || iptables -t nat -A $N1
+echo "gpuserver ($SRC) -> $LAN -> $WAN masquerade on"

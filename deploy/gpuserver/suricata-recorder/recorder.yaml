@@ -1,0 +1,91 @@
+%YAML 1.1
+---
+# Second Suricata instance on gpuserver: passive IDS for traffic mirrored from the recorder host (GRE key 710 ->
+# interface recordermirror). Detect-only: the traffic doesn't pass through gpuserver, so nothing can be blocked here.
+# Everything not overridden comes from the main IPS config (rules, app-layer, detect settings).
+include: /etc/suricata/suricata.yaml
+
+vars:
+  # a `vars:` override replaces the whole map, so every group the rules use is listed here
+  address-groups:
+    # the recorder host itself is "home"; every other host (Wi-Fi clients, LAN, gpuserver, internet) is external to it,
+    # so inbound-attack rules fire for local peers too
+    HOME_NET: "[192.0.2.20,198.51.100.20]"
+    EXTERNAL_NET: "!$HOME_NET"
+    HTTP_SERVERS: "$HOME_NET"
+    SMTP_SERVERS: "$HOME_NET"
+    SQL_SERVERS: "$HOME_NET"
+    DNS_SERVERS: "$HOME_NET"
+    TELNET_SERVERS: "$HOME_NET"
+    AIM_SERVERS: "$EXTERNAL_NET"
+    DC_SERVERS: "$HOME_NET"
+    DNP3_SERVER: "$HOME_NET"
+    DNP3_CLIENT: "$HOME_NET"
+    MODBUS_CLIENT: "$HOME_NET"
+    MODBUS_SERVER: "$HOME_NET"
+    ENIP_CLIENT: "$HOME_NET"
+    ENIP_SERVER: "$HOME_NET"
+  port-groups:
+    # the recorder host's web services (nginx, go2rtc, Forgejo, Grafana, Kuma, ntfy, filebrowser, persons UI)
+    HTTP_PORTS: "[80,1984,3000,3001,3002,8090,8091,8092]"
+    SHELLCODE_PORTS: "!80"
+    ORACLE_PORTS: 1521
+    SSH_PORTS: "[22,2200,2224]"
+    DNP3_PORTS: 20000
+    MODBUS_PORTS: 502
+    FILE_DATA_PORTS: "[$HTTP_PORTS,110,143]"
+    FTP_PORTS: 21
+    GENEVE_PORTS: 6081
+    VXLAN_PORTS: 4789
+    TEREDO_PORTS: 3544
+    SIP_PORTS: "[5060, 5061]"
+
+# Memory: the shared ruleset is ~132k signatures and this build has no Hyperscan; the main instance's
+# "medium" profile with per-group matchers costs ~7 GB. One shared matcher + low profile is enough here.
+detect:
+  profile: low
+  sgh-mpm-context: single
+  sgh-mpm-caching: yes
+  sgh-mpm-caching-path: /var/lib/suricata/cache/sgh-recorder
+  prefilter:
+    default: mpm
+  thresholds:
+    hash-size: 16384
+    memcap: 16 MiB
+mpm-algo: ac-ks
+
+default-log-dir: /var/log/suricata/recorder/
+unix-command:
+  enabled: no
+
+af-packet:
+  - interface: recordermirror
+    cluster-id: 71
+    cluster-type: cluster_flow
+    defrag: yes
+    threads: 2
+
+outputs:
+  - fast:
+      enabled: yes
+      filename: fast.log
+  - eve-log:
+      enabled: yes
+      filetype: regular
+      filename: eve.json
+      community-id: yes
+      types:
+        - alert:
+            tagged-packets: no
+        - anomaly
+        - http:
+            extended: yes
+        - dns
+        - tls:
+            extended: yes
+        - ssh
+        - flow
+  - stats:
+      enabled: yes
+      filename: stats.log
+      interval: 60

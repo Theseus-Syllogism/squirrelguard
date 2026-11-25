@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fitted face 3D</title>
+<!--
+  ?glb=URL                         one fitted face (all LODs)
+  ?identity=ID[&event=EV][&ref=mean|EV2][&color=deviation|uncertainty|none]
+                                   an identity's prior 3D models (persons UI /api/identity/ID/faces): pick a visit or
+                                   the identity's mean face, compare with the mean or another visit of the same identity
+  &embed=1                         compact (inside the replay pane / identity page)   &theme=light|dark   &api=/api/
+  Explanatory evidence only: shapes are compared within one identity, never used to identify anyone.
+-->
+<style>
+  :root { --bg: #f4f5f7; --panel: rgba(255,255,255,.92); --ink: #1b1f24; --muted: #5d6673; --line: #d4d8de; --accent: #2b6cf6; --scene: #e9ebef; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #0f1216; --panel: rgba(20,24,30,.92); --ink: #e6e9ee; --muted: #98a2b3; --line: #2a313b; --accent: #60a5fa; --scene: #161a20; } }
+  :root[data-theme="dark"] { --bg: #0f1216; --panel: rgba(20,24,30,.92); --ink: #e6e9ee; --muted: #98a2b3; --line: #2a313b; --accent: #60a5fa; --scene: #161a20; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 14px/1.4 system-ui, sans-serif; }
+  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  .bar { position: fixed; left: 16px; right: 16px; top: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+         padding: 8px 12px; display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
+  .bar h1 { font-size: 15px; margin: 0; }
+  .bar small, .note { color: var(--muted); }
+  .note { position: fixed; left: 16px; right: 16px; bottom: 12px; font-size: 12px; background: var(--panel); border: 1px solid var(--line);
+          border-radius: 10px; padding: 8px 12px; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; background: transparent; color: var(--ink); padding: 3px 9px; font: inherit; cursor: pointer; }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+  .seg button:disabled { opacity: .4; cursor: default; }
+  label { display: inline-flex; gap: 4px; align-items: center; }
+  select { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 2px 4px; max-width: 16em; }
+  #err { color: #c0392b; }
+  .legend { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .legend i { display: inline-block; width: 90px; height: 10px; border-radius: 5px; background: linear-gradient(90deg, #1a9850, #fee08b, #d73027); }
+  body.embed .bar { left: 6px; right: 6px; top: 6px; padding: 6px 8px; font-size: 12px; }
+  body.embed .bar h1 { display: none; }
+  body.embed .note { display: none; }
+</style>
+</head>
+<body>
+<canvas id="c" aria-label="fitted face, drag to rotate, scroll to zoom"></canvas>
+<div class="bar">
+  <h1>Fitted face</h1>
+  <label id="modellbl" hidden>Model <select id="model" aria-label="which face model"></select></label>
+  <label id="reflbl" hidden>Compare <select id="ref" aria-label="compare with"></select></label>
+  <label id="colorlbl">Colour <select id="color" aria-label="colour the face by">
+    <option value="none">skin</option><option value="deviation">deviation</option><option value="uncertainty">fit uncertainty</option></select></label>
+  <span class="seg" role="group" aria-label="detail level" id="lods"></span>
+  <label><input type="checkbox" id="wire"> Wireframe</label>
+  <span class="legend" id="legend" hidden><span id="lg0">0</span><i></i><span id="lg1">5 %</span></span>
+  <small id="info"></small><span id="err"></span>
+</div>
+<p class="note" id="note">One face shape fitted over a whole visit (squirrel_guard/facefit.py). Explanatory evidence only: identity is decided by the face embedding, never by this shape. Depth is the landmark model's relative estimate unless two calibrated cameras measured the scale.</p>
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+const params = new URLSearchParams(location.search);
+const $ = (id) => document.getElementById(id);
+if (params.get('theme')) document.documentElement.dataset.theme = params.get('theme');
+if (params.get('embed') === '1') document.body.classList.add('embed');
+const api = params.get('api') || '/api/';
+const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const canvas = $('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(2, devicePixelRatio));
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(30, 1, 0.001, 100);
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true;
+scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.6));
+const key = new THREE.DirectionalLight(0xffffff, 1.6);
+key.position.set(1, 1.2, 2);
+scene.add(key);
+const skin = new THREE.MeshStandardMaterial({ color: 0xd9b8a0, roughness: 0.75, metalness: 0, side: THREE.DoubleSide });
+const painted = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8, metalness: 0, side: THREE.DoubleSide });
+let gltf = null, current = null, lodIdx = 0, models = null, devCache = new Map(), framed = false;
+
+function resize() { const w = innerWidth, h = innerHeight; renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); }
+addEventListener('resize', resize);
+resize();
+renderer.setClearColor(css('--scene'));
+
+function ramp(t) { // 0..1 -> green .. yellow .. red
+  t = Math.max(0, Math.min(1, t));
+  const a = [0x1a / 255, 0x98 / 255, 0x50 / 255], b = [0xfe / 255, 0xe0 / 255, 0x8b / 255], c = [0xd7 / 255, 0x30 / 255, 0x27 / 255];
+  const [p, q, u] = t < 0.5 ? [a, b, t * 2] : [b, c, (t - 0.5) * 2];
+  return p.map((x, i) => x + (q[i] - x) * u);
+}
+function meshOf(obj) { let m = null; obj.traverse((o) => { if (o.isMesh && !m) m = o; }); return m; }
+function isLod1(i) { return gltf && gltf.scenes.length > 1 && (gltf.scenes[i].name || '') === 'LOD1'; }
+
+async function paint() {
+  const mode = $('color').value;
+  const m = current && meshOf(current);
+  $('legend').hidden = true;
+  if (!m) return;
+  if (mode === 'none') { m.material = skin; return; }
+  let vals = null, scale = 50;              // per-vertex values in 1/1000 IPD; 50 = 5 % of the eye spacing
+  if (mode === 'uncertainty') {
+    const u = m.geometry.attributes._uncertainty;
+    if (!u) { $('info').textContent += ' · no uncertainty stored'; m.material = skin; return; }
+    vals = Array.from(u.array); scale = 30;
+    $('lg1').textContent = '3 %';
+  } else {
+    const ev = $('model').value, ref = $('ref').value;
+    if (!ev || ev === 'mean' || !ref || ref === 'none') { m.material = skin; $('info').textContent += ' · pick a visit and something to compare with'; return; }
+    const keyc = `${ev}|${ref}`;
+    if (!devCache.has(keyc)) {
+      const r = await fetch(`${api}face/${encodeURIComponent(ev)}/deviation?ref=${encodeURIComponent(ref)}`, { credentials: 'same-origin' });
+      devCache.set(keyc, r.ok ? await r.json() : { available: false, why: `${r.status}` });
+    }
+    const d = devCache.get(keyc);
+    if (!d.available) { m.material = skin; $('info').textContent += ` · ${d.why || 'no comparison'}`; return; }
+    vals = d.per_point_milli_ipd;
+    $('lg1').textContent = '5 %';
+    $('info').textContent += ` · vs ${ref === 'mean' ? 'identity mean' : 'that visit'}: RMS ${d.rms_pct} %, p90 ${d.p90_pct} % of the eye spacing`;
+  }
+  const g = m.geometry, n = g.attributes.position.count;
+  if (vals.length !== n) { m.material = skin; $('info').textContent += ' · colours need the LOD1 level'; return; }
+  const col = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) col.set(ramp(vals[i] / scale), i * 3);
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  m.material = painted;
+  $('legend').hidden = false;
+}
+
+function show(i) {
+  if (current) scene.remove(current);
+  lodIdx = i;
+  current = gltf.scenes[i];
+  current.traverse((o) => { if (o.isMesh) o.material = skin; });
+  scene.add(current);
+  let tris = 0;
+  current.traverse((o) => { if (o.isMesh) tris += (o.geometry.index ? o.geometry.index.count : o.geometry.attributes.position.count) / 3; });
+  $('info').textContent = `${gltf.scenes[i].name || 'LOD' + i}: ${tris.toLocaleString()} triangles`;
+  document.querySelectorAll('#lods button').forEach((b, k) => b.setAttribute('aria-pressed', String(k === i)));
+  if (!framed) { frame(current); framed = true; }
+  paint();
+}
+
+function frame(obj) {
+  const box = new THREE.Box3().setFromObject(obj);
+  const c = box.getCenter(new THREE.Vector3()), s = box.getSize(new THREE.Vector3()).length();
+  controls.target.copy(c);
+  camera.position.copy(c).add(new THREE.Vector3(0, 0, s * 1.9));
+  camera.near = s / 100; camera.far = s * 50;
+  camera.updateProjectionMatrix();
+}
+
+function load(url) {
+  $('err').textContent = '';
+  framed = false;
+  new GLTFLoader().load(url, (g) => {
+    gltf = g;
+    const seg = $('lods');
+    seg.replaceChildren();
+    g.scenes.forEach((s, i) => {
+      const b = document.createElement('button');
+      b.textContent = s.name && s.name.startsWith('LOD') ? s.name : 'mean';
+      b.addEventListener('click', () => show(i));
+      seg.append(b);
+    });
+    show(Math.max(0, g.scenes.indexOf(g.scene)));
+  }, undefined, (e) => { $('err').textContent = `could not load the face: ${e.message || e}`; });
+}
+
+function onModel() {
+  const v = $('model').value;
+  const m = models && (v === 'mean' ? models.mean : models.models.find((x) => x.event === v));
+  if (!m) return;
+  // in deviation mode the coloured level must be LOD1: start there
+  load(m.glb);
+  const r = $('ref');
+  [...r.options].forEach((o) => { o.disabled = v === 'mean' || o.value === v; });
+  if (r.selectedOptions[0] && r.selectedOptions[0].disabled) r.value = v === 'mean' ? 'none' : (models.mean ? 'mean' : 'none');
+}
+
+$('wire').addEventListener('change', (e) => { skin.wireframe = painted.wireframe = e.target.checked; });
+$('color').addEventListener('change', () => { if (current && $('color').value !== 'none' && gltf && gltf.scenes.length > 1 && !isLod1(lodIdx)) show(gltf.scenes.findIndex((s) => s.name === 'LOD1')); else { const t = $('info').textContent.split(' · ')[0]; $('info').textContent = t; paint(); } });
+$('ref').addEventListener('change', () => { $('info').textContent = $('info').textContent.split(' · ')[0]; paint(); });
+$('model').addEventListener('change', onModel);
+
+async function main() {
+  if (params.get('color')) $('color').value = params.get('color');
+  if (params.get('identity')) {
+    const r = await fetch(`${api}identity/${encodeURIComponent(params.get('identity'))}/faces`, { credentials: 'same-origin' });
+    if (!r.ok) { $('err').textContent = `could not load the face models (${r.status})`; return; }
+    models = await r.json();
+    if (!models.models.length) { $('err').textContent = 'no fitted faces for this identity yet'; return; }
+    const sel = $('model'), ref = $('ref');
+    const label = (m) => `${new Date(m.ts).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })} · ${m.camera} · ${m.n_frames} fr`;
+    if (models.mean) sel.append(new Option(`identity mean (${models.mean.n} visits)`, 'mean'));
+    models.models.forEach((m) => sel.append(new Option(label(m) + (m.vs_mean ? ` · ${m.vs_mean.rms_pct} %` : ''), m.event)));
+    ref.append(new Option('nothing', 'none'));
+    if (models.mean) ref.append(new Option('identity mean', 'mean'));
+    models.models.forEach((m) => ref.append(new Option(label(m), m.event)));
+    $('modellbl').hidden = $('reflbl').hidden = false;
+    sel.value = params.get('event') && models.models.some((m) => m.event === params.get('event')) ? params.get('event') : models.models[0].event;
+    ref.value = params.get('ref') || (models.mean ? 'mean' : 'none');
+    if (!params.get('color') && models.mean) $('color').value = 'deviation';
+    $('note').textContent = models.note;
+    onModel();
+  } else if (params.get('glb')) {
+    load(params.get('glb'));
+  } else $('err').textContent = 'no ?glb= or ?identity= given';
+}
+main();
+
+(function loop() { controls.update(); renderer.render(scene, camera); requestAnimationFrame(loop); })();
+</script>
+</body>
+</html>

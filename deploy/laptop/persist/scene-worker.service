@@ -1,0 +1,13 @@
+[Unit]
+Description=squirrel-guard per-clip room scenes (laptop GPU)
+After=network-online.target
+[Service]
+WorkingDirectory=%h/src/squirrel-guard
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 %h/src/squirrel-guard/scripts/scene_worker.py
+Restart=always
+RestartSec=60
+Nice=10
+IOSchedulingClass=idle
+[Install]
+WantedBy=default.target

@@ -1,0 +1,17 @@
+[Unit]
+Description=Expose laptop Proton Mail Bridge SMTP (127.0.0.1:1025) on db-host's 127.0.0.1:1025 for camstack-bridge
+After=network-online.target
+
+[Service]
+# -R binds 127.0.0.1:1025 on the recorder host only (loopback); Bridge itself stays on the laptop's loopback.
+# The recorder host does not notice when this laptop's side dies (sleep, Wi-Fi drop): its old sshd session keeps
+# 127.0.0.1:1025 bound, every reconnect then fails on ExitOnForwardFailure and mail hangs. Free the port first
+# (it is used by nothing but this tunnel).
+# (fuser cannot see sshd's socket as the login user; sudo ss can, and the stale sshd is ours to kill.)
+ExecStartPre=-/usr/bin/ssh -o BatchMode=yes -o ConnectTimeout=10 db-host "for p in $$(sudo -n ss -ltnpH 'sport = :1025' | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u); do kill $$p; done; true"
+ExecStart=/usr/bin/ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -R 127.0.0.1:1025:127.0.0.1:1025 db-host
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=default.target

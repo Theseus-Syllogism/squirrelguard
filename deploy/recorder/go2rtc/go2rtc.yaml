@@ -1,0 +1,16 @@
+# go2rtc: one connection to the camera, re-served to the recorder, squirrel-guard and viewers.
+# ${VARS} come from /srv/camstack/.env (never committed).
+api:
+  listen: ":1984"   # published on 127.0.0.1 only; sign-in is Authelia via nginx (streams.cam.example.org)
+rtsp:
+  listen: ":8554"
+  username: camstack
+  password: ${GO2RTC_RTSP_PASS}
+streams:
+  frontyard: rtsp://thingino:${CAM_RTSP_PASS}@198.51.100.103:554/ch0       # 1920x1080 25 fps, recorded
+  frontyard_sub: rtsp://thingino:${CAM_RTSP_PASS}@198.51.100.103:554/ch1   # 640x360 15 fps, for detection
+  v4: rtsp://thingino:${CAM2_RTSP_PASS}@198.51.100.104:554/ch0         # Wyze Cam v4 (WYZEC4, Thingino raptor) 2560x1440 25 fps + AAC
+  v4_sub: rtsp://thingino:${CAM2_RTSP_PASS}@198.51.100.104:554/ch1     # 640x360 25 fps
+  testcam:            # second camera for testing: USB webcam on the laptop, PUSHED here (laptop/testcam-push.sh)
+log:
+  level: warn

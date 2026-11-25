@@ -1,0 +1,13 @@
+[Unit]
+Description=Mirror recorder host LAN + Wi-Fi traffic to gpuserver Suricata (GRE, IDS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/recorder-traffic-mirror start
+ExecStop=/usr/local/sbin/recorder-traffic-mirror stop
+# the Wi-Fi adapter can come up late or re-plug: re-apply every 5 min via the timer
+[Install]
+WantedBy=multi-user.target

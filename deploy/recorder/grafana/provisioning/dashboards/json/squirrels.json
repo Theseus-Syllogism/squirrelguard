@@ -1,0 +1,300 @@
+{
+ "uid": "squirrels",
+ "title": "Squirrels",
+ "timezone": "America/Denver",
+ "refresh": "1m",
+ "time": {
+  "from": "now-7d",
+  "to": "now"
+ },
+ "schemaVersion": 39,
+ "panels": [
+  {
+   "type": "stat",
+   "title": "Squirrels today (confirmed)",
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 4,
+    "h": 5
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "squirrelguard-pg"
+     },
+     "rawQuery": true,
+     "editorMode": "code",
+     "format": "table",
+     "rawSql": "SELECT count(*) AS squirrels FROM events WHERE camera NOT LIKE '%\\_test' AND confirmed AND lower(label) = 'squirrel' AND ts >= date_trunc('day', now() AT TIME ZONE 'America/Denver') AT TIME ZONE 'America/Denver'"
+    }
+   ],
+   "id": 1,
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "squirrelguard-pg"
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Deterrent fired (range)",
+   "gridPos": {
+    "x": 4,
+    "y": 0,
+    "w": 4,
+    "h": 5
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "squirrelguard-pg"
+     },
+     "rawQuery": true,
+     "editorMode": "code",
+     "format": "table",
+     "rawSql": "SELECT count(*) AS fired FROM events WHERE camera NOT LIKE '%\\_test' AND action = 'fired' AND $__timeFilter(ts)"
+    }
+   ],
+   "id": 2,
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "squirrelguard-pg"
+   }
+  },
+  {
+   "type": "stat",
+   "title": "LLM agreed with detector (range)",
+   "gridPos": {
+    "x": 8,
+    "y": 0,
+    "w": 4,
+    "h": 5
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percentunit",
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "squirrelguard-pg"
+     },
+     "rawQuery": true,
+     "editorMode": "code",
+     "format": "table",
+     "rawSql": "SELECT coalesce(avg(CASE WHEN verifier = 'squirrel' THEN 1.0 ELSE 0.0 END), 0) AS agreement FROM events WHERE camera NOT LIKE '%\\_test' AND lower(label) = 'squirrel' AND verifier IS NOT NULL AND $__timeFilter(ts)"
+    }
+   ],
+   "id": 3,
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "squirrelguard-pg"
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Last confirmed squirrel",
+   "gridPos": {
+    "x": 12,
+    "y": 0,
+    "w": 4,
+    "h": 5
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "dateTimeFromNow"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "squirrelguard-pg"
+     },
+     "rawQuery": true,
+     "editorMode": "code",
+     "format": "table",
+     "rawSql": "SELECT extract(epoch FROM max(ts)) * 1000 AS last FROM events WHERE camera NOT LIKE '%\\_test' AND confirmed AND lower(label) = 'squirrel'"
+    }
+   ],
+   "id": 4,
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "squirrelguard-pg"
+   }
+  },
+  {
+   "type": "barchart",
+   "title": "Events per day",
+   "gridPos": {
+    "x": 0,
+    "y": 5,
+    "w": 14,
+    "h": 9
+   },
+   "options": {
+    "stacking": "normal",
+    "xTickLabelRotation": -45
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "squirrelguard-pg"
+     },
+     "rawQuery": true,
+     "editorMode": "code",
+     "format": "table",
+     "rawSql": "SELECT to_char(date_trunc('day', ts AT TIME ZONE 'America/Denver'), 'MM-DD') AS day, count(*) FILTER (WHERE confirmed AND lower(label) = 'squirrel') AS squirrels, count(*) FILTER (WHERE NOT confirmed AND lower(label) = 'squirrel') AS rejected, count(*) FILTER (WHERE lower(label) = 'person') AS people FROM events WHERE camera NOT LIKE '%\\_test' AND $__timeFilter(ts) GROUP BY 1 ORDER BY 1"
+    }
+   ],
+   "id": 5,
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "squirrelguard-pg"
+   }
+  },
+  {
+   "type": "barchart",
+   "title": "Confirmed squirrels by hour of day",
+   "gridPos": {
+    "x": 14,
+    "y": 5,
+    "w": 10,
+    "h": 9
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "squirrelguard-pg"
+     },
+     "rawQuery": true,
+     "editorMode": "code",
+     "format": "table",
+     "rawSql": "SELECT lpad(h::text, 2, '0') AS hour, coalesce(c, 0) AS squirrels FROM generate_series(0, 23) h LEFT JOIN (SELECT extract(hour FROM ts AT TIME ZONE 'America/Denver')::int AS hr, count(*) AS c FROM events WHERE camera NOT LIKE '%\\_test' AND confirmed AND lower(label) = 'squirrel' AND $__timeFilter(ts) GROUP BY 1) e ON e.hr = h ORDER BY h"
+    }
+   ],
+   "id": 6,
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "squirrelguard-pg"
+   }
+  },
+  {
+   "type": "piechart",
+   "title": "Verifier verdicts",
+   "gridPos": {
+    "x": 0,
+    "y": 14,
+    "w": 8,
+    "h": 9
+   },
+   "options": {
+    "reduceOptions": {
+     "values": true,
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "legend": {
+     "displayMode": "table",
+     "placement": "right",
+     "values": [
+      "value"
+     ]
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "squirrelguard-pg"
+     },
+     "rawQuery": true,
+     "editorMode": "code",
+     "format": "table",
+     "rawSql": "SELECT coalesce(verifier, 'verifier offline') AS verdict, count(*) AS n FROM events WHERE camera NOT LIKE '%\\_test' AND lower(label) = 'squirrel' AND $__timeFilter(ts) GROUP BY 1 ORDER BY 2 DESC"
+    }
+   ],
+   "id": 7,
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "squirrelguard-pg"
+   }
+  },
+  {
+   "type": "table",
+   "title": "Latest events",
+   "gridPos": {
+    "x": 8,
+    "y": 14,
+    "w": 16,
+    "h": 9
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "squirrelguard-pg"
+     },
+     "rawQuery": true,
+     "editorMode": "code",
+     "format": "table",
+     "rawSql": "SELECT ts AS time, camera, label, round(score::numeric, 2) AS score, coalesce(verifier, '-') AS verifier, confirmed, action, detect_ms, snapshot FROM events WHERE camera NOT LIKE '%\\_test' AND $__timeFilter(ts) ORDER BY ts DESC LIMIT 50"
+    }
+   ],
+   "id": 8,
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "squirrelguard-pg"
+   }
+  },
+  {
+   "id": 9,
+   "type": "stat",
+   "title": "People today",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "squirrelguard-pg"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 0,
+    "w": 8,
+    "h": 5
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "squirrelguard-pg"
+     },
+     "rawQuery": true,
+     "editorMode": "code",
+     "format": "table",
+     "rawSql": "SELECT count(*) AS people FROM events WHERE camera NOT LIKE '%\\_test' AND lower(label) = 'person' AND ts >= date_trunc('day', now() AT TIME ZONE 'America/Denver') AT TIME ZONE 'America/Denver'"
+    }
+   ]
+  }
+ ],
+ "tags": [
+  "camstack"
+ ]
+}

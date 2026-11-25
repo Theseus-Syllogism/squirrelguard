@@ -1,0 +1,16 @@
+[Unit]
+Description=Push recorder host IDS alerts (suricata-recorder) to ntfy camstack-alerts
+After=suricata-recorder.service
+
+[Service]
+EnvironmentFile=/etc/suricata/recorder-notify.env
+ExecStart=/usr/bin/python3 -u /usr/local/sbin/ids-notify
+Restart=always
+RestartSec=10
+DynamicUser=yes
+ProtectSystem=strict
+ProtectHome=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,7 @@
+[Unit]
+Description=Camstack portal status snapshot (status.json)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/portal-status
+Nice=10

@@ -1,0 +1,27 @@
+.venv/
+.env
+/config.toml
+/config.toml.bak
+models/
+data/
+sounds/*.wav
+__pycache__/
+*.pt
+*.onnx
+deploy/gpuserver/squirrel-guard/squirrel_guard/
+# SMPL-derived output of scripts/body3d_wham.py (non-commercial licence): never committed or deployed off the user's machines
+deploy/recorder/replay/demo/*_body.bin
+deploy/recorder/replay/demo/*_body_faces.bin
+deploy/recorder/replay/demo/smpl_faces_u16.bin
+deploy/recorder/replay/demo/*_body3d.json
+# InspireFace model packs (InsightFace terms: academic/non-commercial): never committed or published
+**/inspireface/
+Megatron
+Pikachu
+Megatron_TRT
+Gundam_*
+# SMPL-derived 4D avatar exports (scripts/avatar4d_train.py, non-commercial): never committed
+deploy/recorder/replay/demo/*_avatar*
+
+# private values -> placeholders for the public export (scripts/public_export.py); never committed
+/.public-map.toml

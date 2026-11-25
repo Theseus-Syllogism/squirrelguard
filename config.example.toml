@@ -1,0 +1,42 @@
+# Copy to config.toml. The RTSP URL (with password) goes in .env as SG_RTSP_URL, never here.
+
+[camera]
+name = "frontyard"   # used in MQTT topics, notifications and the database
+width = 640        # frames are scaled to this before detection; use the ch1 sub-stream
+height = 360
+fps = 3            # frames per second actually processed
+
+[motion]
+min_area_frac = 0.002   # fraction of ROI pixels that must change
+threshold = 25
+# roi = [[0,180],[640,180],[640,360],[0,360]]   # polygon in 640x360 pixels; omit for the whole frame
+
+[detector]
+model = "models/yolov8s-oiv7.onnx"
+conf = 0.25
+threads = 4
+targets = ["Squirrel"]   # Open Images V7 class names
+
+[trigger]
+window = 6   # look at the last N processed frames...
+need = 3     # ...and require this many squirrel hits before asking the verifier
+
+[verifier]
+enabled = true
+# A vision model on an OpenAI-compatible server: llama.cpp (llama-server with the model's --mmproj file), or any
+# server with /v1/chat/completions that accepts images. Server address only, without /v1. `sg endpoints test` checks it.
+# An API key (llama.cpp --api-key) goes in .env as SG_VERIFIER_API_KEY, never here.
+# A model on a GPU server answers in 1-2 s; on a CPU it can take 15-20 s. A shared server can queue: keep the timeout short.
+url = "http://127.0.0.1:8080"
+model = ""      # model name to ask for; llama.cpp ignores it, model routers and other servers need it
+timeout = 20
+trust_detector_if_down = false  # if the LLM server is off: false = do nothing, true = act on the detector alone
+
+[actuator]
+dry_run = true                  # log only; set false once the speaker is wired up and tested
+cooldown_s = 60
+command = "paplay sounds/deter.wav"
+
+[output]
+dir = "data/events"
+save_all_detections = true      # keeps every frame with any detection, for labelling/fine-tuning later

@@ -1,0 +1,10 @@
+[Unit]
+Description=Re-apply the traffic mirror if an interface lost its tc filters (Wi-Fi re-plug, NetworkManager)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=recorder-traffic-mirror-check.service
+
+[Install]
+WantedBy=timers.target

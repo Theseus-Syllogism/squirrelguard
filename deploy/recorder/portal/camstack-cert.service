@@ -1,0 +1,7 @@
+[Unit]
+Description=Renew the camstack wildcard TLS certificate (Let's Encrypt via Njalla DNS)
+After=network-online.target docker.service
+Wants=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/srv/camstack/portal/renew-cert.sh

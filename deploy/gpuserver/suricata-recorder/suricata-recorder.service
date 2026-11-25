@@ -1,0 +1,20 @@
+[Unit]
+Description=Suricata IDS for traffic mirrored from the recorder host (GRE -> recordermirror)
+After=network-online.target suricata.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=/usr/local/sbin/recorder-mirror-rx
+ExecStartPre=/bin/mkdir -p /var/log/suricata/recorder
+ExecStart=/usr/bin/suricata -c /etc/suricata/recorder.yaml --af-packet --pidfile /run/suricata-recorder.pid
+ExecStopPost=-/sbin/ip link del recordermirror
+ExecReload=/bin/kill -USR2 $MAINPID
+Restart=on-failure
+RestartSec=10
+Nice=5
+# the shared 132k-signature ruleset needs ~6-7 GB without Hyperscan
+MemoryMax=8G
+
+[Install]
+WantedBy=multi-user.target

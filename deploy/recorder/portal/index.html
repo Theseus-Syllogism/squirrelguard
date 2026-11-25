@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Camstack</title>
+<style>
+:root {
+  --bg: #f4f5f7; --card: #ffffff; --text: #1d2330; --muted: #5d6677; --line: #e1e4ea;
+  --ok: #1f9d55; --bad: #d64545; --warn: #c98a12; --accent: #2f6fde;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #12151b; --card: #1b2029; --text: #e6e9ef; --muted: #98a1b3; --line: #2a303b;
+          --ok: #3ccf7f; --bad: #ff6b6b; --warn: #f0b429; --accent: #6ea0ff; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+       font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 40px; }
+header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+h1 { font-size: 22px; margin: 0; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 26px 0 10px; }
+.muted { color: var(--muted); font-size: 13px; }
+.top { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; margin-top: 16px; }
+.top .status { grid-column: 1 / -1; }
+@media (max-width: 760px) { .top { grid-template-columns: 1fr; } }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+.live img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 6px; display: block; background: #000; }
+.live .row { display: flex; justify-content: space-between; margin-top: 8px; }
+.status dl { display: grid; grid-template-columns: auto 1fr; gap: 8px 14px; margin: 0; }
+.status dt { color: var(--muted); }
+.status dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+a.tile { display: block; text-decoration: none; color: inherit; background: var(--card); border: 1px solid var(--line);
+         border-radius: 10px; padding: 14px; transition: border-color .15s; }
+a.tile:hover, a.tile:focus-visible { border-color: var(--accent); outline: none; }
+.tile b { display: flex; align-items: center; gap: 8px; font-size: 16px; }
+.tile p { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+.tile code { font-size: 12px; color: var(--muted); }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); } .dot.warn { background: var(--warn); }
+.ok-t { color: var(--ok); } .bad-t { color: var(--bad); } .warn-t { color: var(--warn); }
+footer { margin-top: 28px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Camstack</h1>
+    <span class="muted" id="updated">loading status…</span>
+  </header>
+
+  <div class="top">
+    <div class="card live">
+      <img id="snap" alt="Front yard camera, latest frame" src="live.jpg">
+      <div class="row"><span class="muted">Front yard &middot; updates every few seconds</span>
+        <a class="muted" href="https://frigate.cam.example.org/#/cameras/frontyard">Full live view &rarr;</a></div>
+    </div>
+    <div class="card live">
+      <img id="snap-v4" alt="Wyze Cam v4, latest frame" src="live_v4.jpg">
+      <div class="row"><span class="muted">v4 (2.5K) &middot; <span id="s-v4-inline">–</span></span>
+        <a class="muted" href="https://frigate.cam.example.org/#/cameras/v4">Full live view &rarr;</a></div>
+    </div>
+    <div class="card status">
+      <dl id="facts">
+        <dt>Front yard (v3)</dt><dd id="s-camera">–</dd>
+        <dt>Front yard recording</dt><dd id="s-recording">–</dd>
+        <dt>v4 camera</dt><dd id="s-v4">–</dd>
+        <dt>v4 recording</dt><dd id="s-v4-rec">–</dd>
+        <dt>Disk free</dt><dd id="s-disk">–</dd>
+        <dt>Network IDS mirror</dt><dd id="s-mirror">–</dd>
+        <dt>Services up</dt><dd id="s-up">–</dd>
+      </dl>
+    </div>
+  </div>
+
+  <h2>Camera</h2>
+  <div class="tiles">
+    <a class="tile" data-svc="frigate" href="https://frigate.cam.example.org/"><b><span class="dot"></span>Frigate</b>
+      <p>Live view, detections, alerts, recordings timeline</p><code>frigate.cam</code></a>
+    <a class="tile" data-svc="persons" href="https://persons.cam.example.org/"><b><span class="dot"></span>People &amp; vehicles</b>
+      <p>Identities, sightings, plates, alerts, daily reports</p><code>persons.cam</code></a>
+    <a class="tile" data-svc="files" href="https://files.cam.example.org/"><b><span class="dot"></span>Recordings</b>
+      <p>Continuous 10-minute recordings, 90 days</p><code>files.cam</code></a>
+    <a class="tile" data-svc="go2rtc" href="https://streams.cam.example.org/"><b><span class="dot"></span>Streams</b>
+      <p>go2rtc: camera stream relay, players</p><code>streams.cam</code></a>
+  </div>
+
+  <h2>Monitoring &amp; notifications</h2>
+  <div class="tiles">
+    <a class="tile" data-svc="grafana" href="https://grafana.cam.example.org/"><b><span class="dot"></span>Dashboards</b>
+      <p>Grafana: squirrel activity, deterrent, events</p><code>grafana.cam</code></a>
+    <a class="tile" data-svc="ntfy" href="https://ntfy.cam.example.org/"><b><span class="dot"></span>Notifications</b>
+      <p>ntfy topics: squirrels, people, visitors, camstack-alerts</p><code>ntfy.cam</code></a>
+    <a class="tile" data-svc="kuma" href="https://uptime.cam.example.org/"><b><span class="dot"></span>Uptime</b>
+      <p>Uptime Kuma: service checks and history</p><code>uptime.cam</code></a>
+    <a class="tile" data-svc="mqtt" href="#" onclick="return false"><b><span class="dot"></span>MQTT broker</b>
+      <p>Mosquitto: events between Frigate, profiler and bridge</p><code>:1883 (no web page)</code></a>
+  </div>
+
+  <footer class="muted">Each service has its own login. Frigate uses a self-signed certificate: accept it once per device.</footer>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const ago = (s) => s < 90 ? `${Math.round(s)} s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : `${(s / 3600).toFixed(1)} h ago`;
+function set(id, text, cls) { const e = $(id); e.textContent = text; e.className = cls || ""; }
+
+async function refreshStatus() {
+  let st;
+  try {
+    const r = await fetch("status.json", { cache: "no-store" });
+    st = await r.json();
+  } catch (e) { set("updated", "status unavailable", "bad-t"); return; }
+  const age = Date.now() / 1000 - st.time;
+  set("updated", `status ${ago(age)}`, age > 180 ? "warn-t" : "");
+  const svc = st.services || {};
+  let up = 0, total = 0;
+  document.querySelectorAll("[data-svc]").forEach((t) => {
+    const s = svc[t.dataset.svc]; const d = t.querySelector(".dot");
+    if (!s) { d.className = "dot"; return; }
+    total++; if (s.up) up++;
+    d.className = "dot " + (s.up ? "ok" : "bad");
+    d.title = s.up ? `up (${s.code ?? "open"}, ${s.ms} ms)` : `down: ${s.error || s.code}`;
+  });
+  set("s-up", `${up} / ${total}`, up === total ? "ok-t" : "bad-t");
+  const c = st.camera || {};
+  set("s-camera", c.up ? "online" : "offline", c.up ? "ok-t" : "bad-t");
+  const cams = st.cameras || {};
+  const recRow = (id, a) => a == null ? set(id, "no segments", "bad-t") : set(id, `last segment ${ago(a)}`, a < 900 ? "ok-t" : "bad-t");
+  recRow("s-recording", (cams.frontyard || {}).newest_age_s ?? (st.recording || {}).newest_age_s);
+  const v4 = cams.v4 || {};
+  set("s-v4", v4.up ? "online" : "offline", v4.up ? "ok-t" : "bad-t");
+  set("s-v4-inline", v4.up ? "online" : "offline", v4.up ? "ok-t" : "bad-t");
+  recRow("s-v4-rec", v4.newest_age_s);
+  const dk = st.disk || {};
+  if (dk.free_gb != null) set("s-disk", `${dk.free_gb} GB (${dk.used_pct}% used)`, dk.used_pct > 90 ? "bad-t" : dk.used_pct > 80 ? "warn-t" : "");
+  const m = st.mirror || {};
+  set("s-mirror", m.up ? `on, ${m.mbps} Mbit/s` : "off", m.up ? "ok-t" : "bad-t");
+}
+
+function refreshSnap() {
+  for (const [id, file] of [["snap", "live.jpg"], ["snap-v4", "live_v4.jpg"]]) {
+    const img = new Image();
+    img.onload = () => { $(id).src = img.src; };
+    img.src = file + "?t=" + Date.now();
+  }
+}
+refreshStatus(); setInterval(refreshStatus, 30000);
+setInterval(() => { if (!document.hidden) refreshSnap(); }, 3000);
+</script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+[Unit]
+Description=Daily check of the camstack wildcard certificate
+[Timer]
+OnCalendar=*-*-* 04:17
+RandomizedDelaySec=1h
+Persistent=true
+[Install]
+WantedBy=timers.target

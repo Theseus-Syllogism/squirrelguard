@@ -1,0 +1,13 @@
+[Unit]
+Description=Backup internet gateway for gpuserver via the Wi-Fi uplink (forward + NAT for 192.0.2.30)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/lan-uplink-nat
+ExecStop=/usr/local/sbin/lan-uplink-nat --remove
+
+[Install]
+WantedBy=multi-user.target

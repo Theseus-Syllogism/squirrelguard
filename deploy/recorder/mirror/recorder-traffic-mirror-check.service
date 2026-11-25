@@ -1,0 +1,6 @@
+[Unit]
+Description=Re-apply the traffic mirror when filters are missing
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'for d in eno1 wlx00c0cab8fc2a; do tc filter show dev $d ingress 2>/dev/null | grep -q mirred || exec /usr/local/sbin/recorder-traffic-mirror start; done; ip link show mirror0 >/dev/null 2>&1 || exec /usr/local/sbin/recorder-traffic-mirror start'

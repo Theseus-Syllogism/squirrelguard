@@ -1,0 +1,13 @@
+[Unit]
+Description=Frigate stall guard: restart Frigate when a camera capture hangs, alert when a camera is offline
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+Environment=GUARD_CAMERAS="v4 frontyard"
+LoadCredential=notify:/etc/homedash/notify.token
+StateDirectory=frigate-stall-guard
+ExecStart=/usr/bin/python3 -I /usr/local/sbin/frigate-stall-guard
+TimeoutStartSec=240
+Nice=5

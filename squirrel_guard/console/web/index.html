@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="sg-token" content="{{token}}">
+<title>squirrel-guard console</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%232563eb' stroke-width='2'%3E%3Cpath d='M12 3l8 3v6c0 5-3.5 8-8 9-4.500-1-8-4-8-9V6z'/%3E%3C/svg%3E">
+<script src="/console.js"></script>
+<link rel="stylesheet" href="/ui/ui.css">
+<link rel="stylesheet" href="/console.css">
+<script src="/ui/ui.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="app-header"><div class="in">
+ <a class="brand" href="#overview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.500 8-8 9-4.500-1-8-4-8-9V6z"/><path d="m9 12 2 2 4-4"/></svg><span>Console</span></a>
+ <nav class="nav" aria-label="Sections" id="nav">
+  <a href="#overview">Overview</a><a href="#install">Install</a><a href="#config">Configuration</a><a href="#endpoints">Endpoints</a><a href="#secrets">Secrets</a>
+  <a href="#checks">Checks</a><a href="#service">Service</a><a href="#events">Events</a>
+ </nav>
+ <span class="grow"></span>
+ <span class="conn" id="conn" role="status" aria-live="polite"></span>
+ <button id="theme-toggle" class="icon-btn" type="button" aria-label="Theme"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.900 4.900l1.400 1.400M17.700 17.700l1.400 1.400M2 12h2M20 12h2M4.900 19.100l1.400-1.400M17.700 6.300l1.400-1.400"/></svg></button>
+</div></header>
+<main id="main" tabindex="-1"><p class="muted">Loading…</p></main>
+<noscript><p style="padding:24px">The console needs JavaScript. Everything it does is also available as commands: run <code>sg --help</code>.</p></noscript>
+</body>
+</html>

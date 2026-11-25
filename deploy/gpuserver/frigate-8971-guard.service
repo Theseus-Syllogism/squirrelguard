@@ -1,0 +1,17 @@
+# Frigate's :8971 trusts the Remote-User/Remote-Groups headers from the recorder host's nginx (Authelia single sign-on),
+# so only the recorder host (192.0.2.20) may connect to it. Docker-published ports skip INPUT, hence DOCKER-USER.
+# Install: sudo install -m 644 frigate-8971-guard.service /etc/systemd/system/ && sudo systemctl enable --now frigate-8971-guard
+[Unit]
+Description=Allow only the recorder host SSO proxy to reach Frigate :8971
+After=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment="RULE=-p tcp -m conntrack --ctorigdstport 8971 --ctdir ORIGINAL ! -s 192.0.2.20 -j DROP"
+ExecStart=/bin/sh -c 'iptables -C DOCKER-USER $RULE 2>/dev/null || iptables -I DOCKER-USER $RULE'
+ExecStop=/bin/sh -c 'iptables -D DOCKER-USER $RULE 2>/dev/null || true'
+
+[Install]
+WantedBy=multi-user.target docker.service

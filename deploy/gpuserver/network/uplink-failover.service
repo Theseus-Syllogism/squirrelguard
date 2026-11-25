@@ -1,0 +1,12 @@
+[Unit]
+Description=gpuserver uplink failover: laptop lan-gw -> recorder host (lan-uplink-nat)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/sbin/uplink-failover
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

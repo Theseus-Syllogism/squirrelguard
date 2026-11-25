@@ -1,0 +1,72 @@
+# Open-vocabulary detector vocabulary (scripts/export_openvocab.py bakes it into the ONNX file).
+#
+#   prompt                 detect "prompt", report it as "prompt"
+#   prompt = label         detect "prompt", report it as "label" (several prompts can share one label)
+#   prompt = -             DISTRACTOR: detected but never reported. Every box takes the single best-scoring prompt,
+#                          so a distractor that describes a common scene object better ("coat", "lamp") absorbs
+#                          boxes that would otherwise be weak false hits ("duffel bag", "flashlight").
+#
+# Prompts are CLIP text: short concrete nouns work best; adjectives and verbs ("carrying") do little.
+# Changing this file needs a re-export; the runtime can only narrow the reported labels (openvocab_classes).
+
+# --- tools that matter for break-ins
+ladder
+step ladder = ladder
+crowbar = pry bar
+pry bar
+hammer
+sledgehammer = hammer
+bolt cutters
+screwdriver
+power drill
+axe
+shovel
+# --- weapons
+knife
+machete = knife
+baseball bat
+handgun = gun
+rifle = gun
+# --- bags and things taken away / delivered
+backpack
+duffel bag
+suitcase
+cardboard box = package
+package
+plastic bag
+# --- other
+bicycle
+flashlight
+gas can
+jerrycan = gas can
+crossbody bag = bag
+handbag = bag
+# --- distractors: common things in this camera's scenes and things people hold anyway
+person = -
+coat = -
+jacket = -
+lamp = -
+light bulb = -
+computer monitor = -
+shelf = -
+chair = -
+table = -
+cup = -
+mobile phone = -
+bottle = -
+umbrella = -
+broom = -
+rake = -
+garden hose = -
+pipe = -
+trash can = -
+car = -
+# added after the first evaluation (docs/openvocab.md): what the false hits really were
+shoe = -
+railing = -
+fence = -
+bench vise = -
+space heater = -
+bed = -
+blanket = -
+book = -

@@ -1,0 +1,8 @@
+#!/bin/sh
+# Receive end of the recorder host traffic mirror (GRE key 710 from 192.0.2.20) -> interface recordermirror.
+set -eu
+ip link del recordermirror 2>/dev/null || true
+ip link add recordermirror type gretap local 192.0.2.30 remote 192.0.2.20 key 710
+ip link set recordermirror mtu 9000 arp off up
+sysctl -qw net.ipv6.conf.recordermirror.disable_ipv6=1 || true   # receive-only: never transmit into the tunnel
+ethtool -K recordermirror gro off lro off 2>/dev/null || true   # let Suricata see the packets as sent

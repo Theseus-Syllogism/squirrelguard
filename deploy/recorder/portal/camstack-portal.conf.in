@@ -1,0 +1,16 @@
+# Old address https://198.51.100.20/ (self-signed cert): everything now lives at https://cam.example.org behind
+# single sign-on (camstack-sso.conf). Kept only so old bookmarks land on the new portal. Installed by install-portal.sh.
+server {
+    listen 198.51.100.20:80 default_server;
+    server_name _;
+    return 301 https://cam.example.org$request_uri;
+}
+
+server {
+    listen 198.51.100.20:443 ssl http2 default_server;   # nginx 1.24: no "http2 on;" directive
+    server_name _;
+    ssl_certificate     /etc/nginx/camstack/portal.crt;
+    ssl_certificate_key /etc/nginx/camstack/portal.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    return 301 https://cam.example.org$request_uri;
+}

@@ -1,0 +1,6 @@
+# USB-C RJ45 dongle (cdc_ncm) = the lan-gw gateway uplink: always eth1 (lan-gw profile, dispatcher scripts,
+# nm-shared-eth1 nft table and the link watchdog are pinned to this name).
+[Match]
+MACAddress=c8:a3:62:c2:de:d0
+[Link]
+Name=eth1

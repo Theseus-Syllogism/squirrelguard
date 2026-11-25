@@ -1,0 +1,153 @@
+# squirrel-guard, Frigate mode, on gpuserver next to Frigate.
+
+[frigate]
+api = "http://frigate:5000"     # Frigate's internal, unauthenticated port (compose network only)
+labels = ["squirrel", "person"] # events we act on
+verify_labels = ["squirrel"]    # these get the Qwen check (+ deterrent); others are notified as detected
+cameras = ["v4"]   # cameras whose events are alerted on and profiled
+min_score = 0.0                 # Frigate's own filters already apply
+
+[notify]
+review_url = "https://frigate.cam.example.org"      # SSO (Authelia) via the recorder host nginx, reachable from phones on HomeWiFi
+min_interval_s = {squirrel = 120, person = 300}   # at most one notification per label per interval
+
+[clips]                         # second notification: the event clip with boxes burned in
+enabled = true
+model = "/models/yolov8s-oiv7.onnx"
+labels = ["squirrel", "person", "cat", "dog", "bird", "rabbit", "raccoon", "skunk"]
+conf = 0.3
+width = 960
+fps = 12
+detect_every = 2                # run the detector on every 2nd output frame, hold boxes in between
+max_seconds = 30
+threads = 6
+wait_for_end_s = 180            # give up if the event has not ended with a recording by then
+settle_s = 15                   # after end_time, wait for the last segment to reach storage
+
+[announce]                      # spoken warning on the camera speaker (camera:/etc/deter/announce/)
+enabled = false                 # disabled 2026-11-08 by the owner
+labels = ["person"]
+sound = "person_announce"       # "Person detected. Video surveillance is recording."
+volume = 90
+min_interval_s = 300            # at most once per 5 min; no quiet hours (night is when it matters)
+
+[profiler]                      # person sightings -> fingerprint + attributes -> recorder host identities
+face_v2_adaface = "/models/adaface/adaface_ir101_webface12m.onnx"   # docs/faceid-v2.md
+face_v2_threads = 2
+detector_model = "/models/yolov8s-oiv7.onnx"
+reid_model = "/models/osnet_x0_25_msmt17.onnx"
+vehicle_model = "/models/dinov2_vits14_224.onnx"   # vehicle appearance fingerprint
+vehicle_profile_after_s = 20    # parked cars keep the event open: profile after 20 s
+frames = 6                      # frames sampled from the event clip
+min_crop_height = 64
+profile_after_s = 10            # profile a person once tracked this long (stationary people never "end")
+threads = 4
+settle_s = 15
+llm_url = "http://host.docker.internal:5920"   # Qwen3.8 27B + vision (llama-qwen27b) for attributes (apparent age/gender are guesses)
+pose_model = "/models/yolov8s-pose.onnx"     # body keypoints -> height (needs /calib/<camera>.json) + gait
+# Small-person sweeper (squirrel_guard/sweep.py, docs/sweep.md): Frigate's OIV7 model misses distant walkers (~65 px:
+# person score 0.02-0.08). Once a second, zoomed 320 px tiles around small moving blobs go through the COCO pose model;
+# a person seen in 2+ sweeps with no Frigate person event becomes a Frigate event (with recording) and is profiled.
+sweep_cameras = ["v4"]
+sweep_fps = 1.0
+sweep_min_score = 0.5
+sweep_tile = 320
+zoom_fallback = true            # profile(): zoomed band scan when the whole-frame detector finds no person
+gait_model = "/models/gaitbase_grew.onnx"            # learned gait signature (OpenGait GaitBase, GREW)
+gait_seg_model = "/models/yolov8s-seg-320.onnx"      # person silhouettes for it (320 px: ~31 ms/frame)
+action_model = "/models/stgcnpp_ntu120_hrnet_j.onnx"   # skeleton actions (NTU-120): fall, stagger, throw, ...
+openvocab_model = "/models/yolov8s-worldv2-sg.onnx"  # objects named in words (scripts/export_openvocab.py); "" = off
+openvocab_classes = []                        # report only these labels (subset of the exported vocabulary); [] = all
+openvocab_min_score = 0.25                    # per-box score (YOLO-World scores run low: 0.25-0.85 for real hits)
+openvocab_every = 2                           # every 2nd analysed frame with the tracked person (~4 frames/s)
+openvocab_min_frames = 2                      # a label counts only if seen on >= 2 sampled frames
+openvocab_max_frames = 60                     # CPU bound: at most 60 object passes per event
+calib_dir = "/calib"                          # written by: python -m squirrel_guard.calibrate ...
+# IK rig + gait for every replay of a calibrated camera (docs/rigfit.md): RTMW l-m whole-body keypoints at rig_fps on
+# the first rig_max_s seconds, procedural skeleton fit (torch, rig_threads threads); ~1 CPU-minute per 20 s event
+rig_enabled = true
+rig_model = "/models/rtmw/rtmw-dw-l-m_simcc-cocktail14_270e-256x192.onnx"
+rig_fps = 12
+rig_max_s = 20
+rig_threads = 2
+# 3D body for every rig replay: SMPL dressed onto the rig (squirrel_guard.smplfit); the SMPL model is mounted at run time
+# (non-commercial licence, local only); ~10-40 s CPU per event, ~1-2 MB of float16 vertices per replay (every 2nd frame)
+rig_parts = ["face", "hands"]          # head pose + jaw from the 68 face points, wrists + finger curls (docs/rigfit.md)
+body_enabled = true
+body_smpl_model = "/models/smpl/SMPL_NEUTRAL.npz"
+body_mesh_step = 2
+body_iters = 300
+# Multi-camera fusion (squirrel_guard/fusion.py, docs/fusion.md): when overlapping person events of 2+ cameras that
+# share a calibration frame (same multicam_rig solve) have ALL ended, the profiler fetches every camera's recording
+# for the common window, finds the time offsets from joint ray gaps, drops cameras that moved/saw nothing, fits ONE
+# rig over all views and publishes squirrelguard/<camera>/fusion (bridge: sightings.fused_trajectory_file). Runs in
+# its own thread with a 2-deep queue; per-camera replays are unchanged and stay the fallback.
+fusion_enabled = true
+fusion_fps = 16                 # rig + gait rate for fused visits; replay = every 2nd frame (8 fps). docs/fusion.md
+fusion_max_s = 20               # window cap: around the part the cameras saw together
+fusion_max_cameras = 3
+fusion_max_offset_s = 4         # clip start differences searched (02:41 v4 vs frontyard: 2.05 s)
+fusion_max_gap_m = 0.15         # anchor pair: median joint ray gap above this = moved camera / other person
+analysis_fps = 8                              # frames/s analysed from the event recording
+analysis_max_s = 40                           # long events: first 20 s + last 20 s
+# Face identification (squirrel_guard/faceid.py, docs/faceid.md): InspireFace + per-visit FASR-style template.
+# Names only ENROLLED household/known people (persons UI); liveness must pass; no race output; expression = description.
+# InspireFace models are academic/non-commercial (InsightFace terms): mount the pack, never bake it into the image.
+face_enabled = true                           # /models/inspireface/Megatron mounted (compose.yaml)
+face_model_pack = "/models/inspireface/Megatron"
+face_detect_level = 320                       # detector input on the head window (160/320/640)
+face_min_px = 24                              # faces smaller than this (px, frame) are not used
+face_min_quality = 0.0                        # per-face floor; the template weights by quality anyway
+face_max_frames = 96                          # best faces kept per visit (512 floats each; only 3 keep a crop)
+face_every = 1                                # try every analysed frame (8 fps) whose head is big enough
+face_max_attempts = 150                       # CPU bound per event: detector calls (backs off after misses) ...
+face_max_cpu_s = 8                            # ... and CPU seconds
+face_expression = true                        # apparent expression, description only
+face_attributes = false                       # apparent age/gender from InspireFace (its race head is discarded)
+# Vehicle occupant faces (squirrel_guard/occupants.py, docs/faceid-v2.md "Vehicle occupants"): faces inside the cabin
+# of a vehicle visit -> per-occupant templates -> the recorder host matches them against ENROLLED faces (and, with FACE_AUTO_TRACK,
+# unnamed visitors). Needs face_enabled. Measured 2026-11-08 on v4 (30 cm high, under the cars): 0 usable occupant faces
+# in 18 car visits, ~6 s CPU each -> off until a camera sees windscreens/side windows.
+vehicle_occupant_faces = false
+vehicle_occupant_detect_level = 640           # second InspireFace session; cabin tiles are upscaled to this
+vehicle_occupant_tile_px = 320                # tile side in frame px (2x magnification at 640)
+vehicle_occupant_max_tiles = 12               # per frame
+vehicle_occupant_fps = 2                      # pass 1: vehicle boxes at this rate ...
+vehicle_occupant_frames = 8                   # ... pass 2: face tiles on this many frames, spread over the visit
+vehicle_occupant_max_s = 20                   # arrival window (+ departure window for long visits)
+vehicle_occupant_max_cpu_s = 12
+vehicle_occupant_max_templates = 3            # occupants per visit sent to the bridge
+# Face geometry + relative depth (squirrel_guard/facegeom.py, docs/facegeom.md): MediaPipe face mesh on the best
+# near-frontal faces; explanatory evidence only (never decides identity). Off until deployed and checked.
+facegeom_enabled = true
+facegeom_model = "/opt/mediapipe/face_landmarker.task"   # Apache-2.0, baked into the image (Dockerfile)
+facegeom_faces = 8                            # best near-frontal faces meshed per visit (~2 ms each on the laptop)
+facegeom_max_yaw = 25                         # degrees
+facegeom_min_px = 32                          # faces smaller than this are not measured
+# fitted face (squirrel_guard/facefit.py, docs/facefit.md): one shape per visit from every accepted face, lens-aware
+# with the camera calibration, LOD0-3 mesh; ~15-20 ms per face + ~1 s fit; explanatory evidence only
+facefit_enabled = true
+facefit_model = "/opt/mediapipe/face_landmarker.task"
+facefit_max_frames = 96
+facefit_max_ms = 4000
+pulc_person_model = "/models/pulc_person_attribute.onnx"    # PaddleClas PULC (PA100K) attributes; "" = off (docs/pulc.md)
+pulc_vehicle_model = "/models/pulc_vehicle_attribute.onnx"  # PULC vehicle colour + type (VeRi-776); "" = off
+plate_models = "/opt/vehicle"         # own plate reading (vehicle_read.py, built into the image); "" = Frigate's plates only
+pulc_max_crops = 6                            # best N crops per visit (~4 ms each on CPU)
+pulc_min_aspect = 1.5                         # person crops: only upright full-body views (close-ups make PULC guess)
+pulc_threads = 2
+
+[verifier]
+enabled = true
+url = "http://host.docker.internal:5920"   # Qwen3.8 27B + vision (llama-qwen27b); one slot shared with opencode, so a longer timeout
+timeout = 60
+trust_detector_if_down = false
+
+[actuator]
+dry_run = false                 # LIVE: plays sounds on the camera speaker (set true to log only)
+mode = "mqtt"                   # publish squirrelguard/<camera>/deter; the recorder host bridge plays it on the camera
+sound = "random"                # random of sweeps_a, sweeps_b, screech, clatter (or one name)
+volume = 85                     # camera speaker volume 0-100
+quiet_hours = ["21:30", "07:00"]  # no sound in this window (action "quiet")
+cooldown_s = 60
+command = "true"                # placeholder; with mode = "mqtt" nothing local is run

@@ -1,0 +1,370 @@
+<!doctype html>
+<!--
+  squirrel-guard trajectory replay: renders a trajectory JSON (squirrel_guard.trajectory.estimate) in 3D.
+  URL parameters:  ?data=<url>         trajectory JSON (default sample.json); its "assets" (replay_assets.attach:
+                                       atlas, background, ground) are resolved relative to this URL
+                   ?scene=plain|projection|splat|both   initial scene (both = splat + projection on top)
+                   ?opacity=0..1       projection opacity        ?cutouts=off|current|trail|ghost
+                   ?overlays=0         start with the path/ellipses/footprints/stick figure hidden
+                   ?body=mesh|both|joints|stick   person drawing when the data has a "body3d" block (WHAM, offline:
+                                       scripts/body3d_wham.py); the mesh files (body3d.mesh) are optional
+                   ?splat=<file>       Gaussian-splat scene (.ply / .splat / .ksplat) in the same world frame
+                                       (metres, Z up); ?splat_pos=x,y,z&splat_rot=xdeg,ydeg,zdeg&splat_scale=s adjust it.
+                                       Without ?splat=, the data file's assets.splat is used (already in its world frame),
+                                       else choosing the splat scene reads scene.json next to this page:
+                                       {"splat": "file", "position": [x,y,z], "rotation": [xdeg,ydeg,zdeg], "scale": s}
+                   ?t=<s>  ?autoplay=0  ?view=camera  ?look=x,y,z,tx,ty,tz (eye + target, world metres)
+                   ?pane=1             open the investigation pane at once (pane.js; docs/replay-pane.md)
+                   ?api=<url>          base of the persons-ui JSON API for the pane (default /api/)
+  Investigation pane: click/tap the person (stick figure, 3D body, cut-out, position marker), or "Inspect person",
+  or press I / Enter on the 3D view. Real visits (data file <event>_traj.json or "event" in the JSON) load
+  /api/visit/<event>; demo samples show what their JSON holds.
+  Static files only: python3 -m http.server in this directory is enough.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trajectory Replay</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: rgba(255,255,255,.88); --ink: #1b1f24; --muted: #5d6673; --line: #d4d8de;
+    --accent: #2563eb; --warn: #d97706; --ok: #15803d;
+    --c-start: #2b6cf6; --c-end: #e0342f; --c-ellipse: #7c3aed; --c-pred: #f59e0b; --c-foot-l: #0e9f6e; --c-foot-r: #0369a1;
+    --c-skel: #111827; --c-body: #c2410c; --c-gaze: #d97706; --c-cam: #374151; --c-grid: #9aa3ad; --c-grid2: #c9cfd6; --c-truth: #6b7280; --c-zone: #10b981;
+    --scene-bg: #e9ecf0;
+    --c-photo-sky: #d6d0c7; --c-photo-mid: #8a7a66; --c-photo-low: #7d705f; --c-person: #4a3f35;
+    --c-splat-a: #7aa36f; --c-splat-b: #b8925c;
+    /* investigation pane */
+    --panel-solid: #ffffff; --notice-bg: #eef4ff; --shadow: 0 12px 32px rgba(15,23,42,.18);
+    --band-strong: #15803d; --band-likely: #4d7c0f; --band-possible: #b45309; --band-unlikely: #b91c1c; --band-none: #94a3b8;
+    --chip-ink: #ffffff; --c-veh: #0f766e;
+    --kind-household: #d9f2d9; --kind-watch: #ffd9d9; --kind-known: #d9e8ff; --kind-unknown: #e5e7eb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1216; --panel: rgba(20,24,30,.9); --ink: #e6e9ee; --muted: #98a2b3; --line: #2a313b;
+      --accent: #60a5fa; --c-skel: #f3f4f6; --c-body: #fb923c; --c-gaze: #fbbf24; --c-cam: #cbd5e1; --c-grid: #4b5563; --c-grid2: #2b323c; --c-truth: #9ca3af;
+      --scene-bg: #14181f;
+      --panel-solid: #161b22; --notice-bg: #1a2638; --shadow: 0 12px 32px rgba(0,0,0,.5);
+      --band-strong: #22c55e; --band-likely: #a3e635; --band-possible: #fbbf24; --band-unlikely: #f87171; --band-none: #64748b;
+      --chip-ink: #0b0f14; --c-veh: #2dd4bf;
+      --kind-household: #1f3a26; --kind-watch: #4a1f22; --kind-known: #1e2f4d; --kind-unknown: #2a313b;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1216; --panel: rgba(20,24,30,.9); --ink: #e6e9ee; --muted: #98a2b3; --line: #2a313b;
+    --accent: #60a5fa; --c-skel: #f3f4f6; --c-body: #fb923c; --c-gaze: #fbbf24; --c-cam: #cbd5e1; --c-grid: #4b5563; --c-grid2: #2b323c; --c-truth: #9ca3af;
+    --scene-bg: #14181f;
+    --panel-solid: #161b22; --notice-bg: #1a2638; --shadow: 0 12px 32px rgba(0,0,0,.5);
+    --band-strong: #22c55e; --band-likely: #a3e635; --band-possible: #fbbf24; --band-unlikely: #f87171; --band-none: #64748b;
+    --chip-ink: #0b0f14; --c-veh: #2dd4bf;
+    --kind-household: #1f3a26; --kind-watch: #4a1f22; --kind-known: #1e2f4d; --kind-unknown: #2a313b;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; } /* flex rows/labels would otherwise override the attribute */
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow-x: hidden; }
+  #app { position: relative; width: 100%; height: 100dvh; min-height: 480px; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+  .panel { position: absolute; background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    backdrop-filter: blur(6px); padding: 10px 12px; max-width: calc(100% - 32px); }
+  #hud { position: absolute; left: 16px; right: 16px; top: 12px; bottom: calc(var(--bottom-h, 96px) + 20px);
+    display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+  #hud > * { pointer-events: auto; }
+  #top { position: static; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; max-width: 100%; }
+  #top .row { display: flex; gap: 8px 14px; align-items: center; flex-wrap: wrap; flex-basis: 100%; }
+  #top label { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); font-size: 13px; white-space: nowrap; }
+  select { font: inherit; font-size: 13px; color: var(--ink); background: var(--bg); border: 1px solid var(--line);
+    border-radius: 8px; padding: 4px 6px; max-width: 100%; }
+  #opacity { width: 96px; accent-color: var(--accent); }
+  #top input[type=checkbox] { accent-color: var(--accent); margin: 0; }
+  #top h1 { font-size: 15px; margin: 0 8px 0 0; font-weight: 600; }
+  button { font: inherit; background: transparent; color: var(--ink); border: 1px solid var(--line); border-radius: 8px;
+    padding: 5px 10px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button[aria-pressed="true"] { background: var(--accent); color: #fff; border-color: var(--accent); }
+  #status { color: var(--muted); font-size: 12px; margin-left: auto; }
+  #bottom { left: 16px; right: 16px; bottom: 12px; display: grid; grid-template-columns: auto 1fr; gap: 8px 12px;
+    align-items: center; }
+  #bottom input[type=range] { width: 100%; accent-color: var(--accent); }
+  #readout { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 13px; color: var(--muted); }
+  #readout b { color: var(--ink); font-variant-numeric: tabular-nums; }
+  #legend { position: static; align-self: flex-start; width: 300px; max-width: 100%; font-size: 12.5px; min-height: 0; overflow: auto; }
+  #legend summary { cursor: pointer; font-weight: 600; }
+  #legend ul { list-style: none; padding: 0; margin: 8px 0 0; }
+  #legend li { display: flex; gap: 8px; align-items: flex-start; margin: 6px 0; color: var(--muted); }
+  #legend li span.sw { flex: 0 0 26px; height: 12px; margin-top: 3px; border-radius: 3px; }
+  #legend li b { color: var(--ink); }
+  .grad { background: linear-gradient(90deg, var(--c-start), var(--c-end)); }
+  .dash { background: repeating-linear-gradient(90deg, var(--c-end) 0 5px, transparent 5px 9px); }
+  #err { color: var(--warn); }
+  .sw.cut { background: linear-gradient(180deg, var(--c-photo-mid), var(--c-person)); border-radius: 6px 6px 2px 2px; height: 16px !important; margin-top: 1px !important; }
+  .sw.ghost { background: var(--c-photo-mid); opacity: .35; }
+  .sw.proj { background: linear-gradient(180deg, var(--c-photo-sky) 0 40%, var(--c-photo-low) 40%); }
+  .sw.backdrop { background: linear-gradient(180deg, var(--c-photo-sky), var(--c-photo-mid)); }
+  .sw.splat { background: radial-gradient(circle at 30% 40%, var(--c-splat-a) 0 3px, transparent 4px), radial-gradient(circle at 70% 60%, var(--c-splat-b) 0 3px, transparent 4px), var(--line); }
+  /* -- investigation pane (pane.js) ------------------------------------------------------------------------------ */
+  #inspect { border-color: var(--accent); }
+  .tip { position: absolute; z-index: 4; pointer-events: none; font-size: 12px; background: var(--panel-solid); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 6px; padding: 2px 7px; box-shadow: var(--shadow); }
+  #pane { position: absolute; z-index: 5; left: auto; top: 72px; width: min(468px, calc(100% - 32px)); max-height: calc(100% - 150px);
+    display: flex; flex-direction: column; background: var(--panel-solid); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; font-size: 13px; }
+  #pane.dragging { opacity: .93; user-select: none; }
+  #pane-head { display: flex; align-items: center; gap: 10px; padding: 10px 8px 9px 12px; cursor: grab; border-bottom: 1px solid var(--line); touch-action: none; }
+  #pane.dragging #pane-head { cursor: grabbing; }
+  #pane .grab { display: none; }
+  #pane .avatar { flex: 0 0 44px; height: 44px; border-radius: 50%; overflow: hidden; background: var(--line); display: grid; place-items: center; }
+  .pn-avatar-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  #pane .avatar .glyph { font-size: 20px; color: var(--muted); }
+  #pane .ttl { min-width: 0; flex: 1; }
+  #pane-title { font-size: 15px; margin: 0; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #pane-sub { font-size: 12px; color: var(--muted); }
+  #pane .chips { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; max-width: 40%; }
+  .pn-x { border: none; font-size: 18px; line-height: 1; padding: 4px 7px; color: var(--muted); }
+  .pn-x:hover { color: var(--ink); }
+  #pane-notice { padding: 7px 12px; font-size: 12.5px; background: var(--notice-bg); border-bottom: 1px solid var(--line); }
+  #pane-tabs { display: flex; gap: 2px; padding: 6px 8px 0; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; flex: 0 0 auto; }
+  #pane-tabs [role=tab] { border: none; border-bottom: 2px solid transparent; border-radius: 6px 6px 0 0; padding: 6px 10px; font-size: 13px; color: var(--muted); white-space: nowrap; }
+  #pane-tabs [role=tab][aria-selected=true] { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; background: transparent; }
+  #pane-tabs .count { margin-left: 5px; font-size: 11px; background: var(--line); color: var(--ink); border-radius: 8px; padding: 0 5px; }
+  #pane-body { overflow: auto; padding: 10px 12px 14px; min-height: 120px; flex: 1 1 auto; }
+  #pane.min #pane-tabs, #pane.min #pane-body, #pane.min #pane-card, #pane.min #pane-notice { display: none; }
+  #pane button:focus-visible, #pane a:focus-visible, #pane-body:focus-visible, #c:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .chip { display: inline-block; font-size: 11.5px; line-height: 1.55; padding: 0 7px; border-radius: 9px; background: var(--line); color: var(--ink); white-space: nowrap; }
+  .chip.band-strong { background: var(--band-strong); color: var(--chip-ink); } .chip.band-likely { background: var(--band-likely); color: var(--chip-ink); }
+  .chip.band-possible { background: var(--band-possible); color: var(--chip-ink); } .chip.band-unlikely { background: var(--band-unlikely); color: var(--chip-ink); }
+  .chip.kind-household { background: var(--kind-household); } .chip.kind-watch { background: var(--kind-watch); }
+  .chip.kind-known { background: var(--kind-known); } .chip.kind-unknown { background: var(--kind-unknown); }
+  .pn-sec { margin: 14px 0 0; }
+  .pn-sec h3 { font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 6px; font-weight: 650; }
+  .pn-kv { display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; margin: 0; }
+  .pn-kv dt { color: var(--muted); } .pn-kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+  .pn-list { margin: 0; padding-left: 18px; } .pn-list li { margin: 2px 0; } .pn-list.small, .pn-list .small { font-size: 12px; }
+  .pn-list li.eff-lowers { color: var(--band-unlikely); }
+  .pn-note { color: var(--muted); font-size: 12px; margin: 6px 0; }
+  .pn-face3d { width: 100%; height: 300px; border: 1px solid var(--line); border-radius: 8px; display: block; background: var(--bg); }
+  .pn-modellist { list-style: none; padding: 0; margin: 6px 0; display: grid; gap: 4px; }
+  .pn-modellist li { display: flex; justify-content: space-between; gap: 8px; align-items: center; font-size: 12px; }
+  .pn-fig { margin: 6px 0 10px; } .pn-fig figcaption { font-size: 12px; font-weight: 600; margin-bottom: 2px; }
+  .pn-angles { width: 100%; height: auto; display: block; }
+  .pn-angles .ln { fill: none; stroke-width: 1.8; } .pn-angles .ln.l { stroke: var(--c-foot-l); } .pn-angles .ln.r { stroke: var(--c-foot-r); }
+  .pn-angles .gr { stroke: var(--c-grid2); stroke-width: 0.6; } .pn-angles .ax { fill: var(--muted); font-size: 9px; }
+  .pn-angles .ph { stroke: var(--ink); stroke-width: 1; stroke-dasharray: 3 2; }
+  .pn-fig .lg { display: inline-block; padding: 0 5px; border-radius: 4px; color: #fff; font-size: 11px; font-weight: 600; }
+  .pn-fig .lg.l { background: var(--c-foot-l); } .pn-fig .lg.r { background: var(--c-foot-r); }
+  .pn-note.info { background: var(--notice-bg); color: var(--ink); padding: 8px 10px; border-radius: 8px; }
+  .pn-note.warn { color: var(--warn); }
+  .pn-headline { font-weight: 600; margin: 0 0 6px; } .pn-headline small { font-weight: 400; color: var(--muted); }
+  .pn-reasons { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
+  .pn-reasons .code { font-size: 11.5px; border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; }
+  .pn-meter { position: relative; height: 8px; border-radius: 4px; background: var(--line); margin: 8px 0; }
+  .pn-meter .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); border-radius: 4px; }
+  .pn-meter .mark { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--ink); }
+  .pn-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+  .pn-btn { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; padding: 4px 9px; border: 1px solid var(--line); border-radius: 8px;
+    color: var(--ink); text-decoration: none; background: transparent; cursor: pointer; }
+  .pn-btn:hover { border-color: var(--accent); } .pn-btn.sm { padding: 1px 7px; font-size: 12px; }
+  .pn-evidence { max-width: 100%; border-radius: 6px; display: block; }
+  .pn-faces { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; }
+  .pn-face { width: 84px; height: 84px; object-fit: cover; border-radius: 8px; background: var(--line); display: block; }
+  .pn-enrolled { margin: 0 0 0 8px; padding-left: 12px; border-left: 2px dashed var(--line); }
+  .pn-enrolled figcaption { font-size: 11px; color: var(--muted); margin-top: 3px; }
+  .pn-graph-wrap { margin: 0 -6px; }
+  .pn-graph { width: 100%; height: auto; display: block; }
+  .pn-graph .edge { stroke: var(--band-none); stroke-opacity: .7; stroke-linecap: round; }
+  .pn-graph .edge.band-strong { stroke: var(--band-strong); } .pn-graph .edge.band-likely { stroke: var(--band-likely); }
+  .pn-graph .edge.band-possible { stroke: var(--band-possible); } .pn-graph .edge.band-unlikely { stroke: var(--band-unlikely); stroke-dasharray: 4 3; }
+  .pn-graph .edge.hot { stroke-opacity: 1; }
+  .pn-graph .member { stroke: var(--muted); stroke-dasharray: 2 3; stroke-width: 1; opacity: .55; }
+  .pn-graph .elabel { font-size: 9.5px; fill: var(--ink); paint-order: stroke; stroke: var(--panel-solid); stroke-width: 3px; stroke-linejoin: round; }
+  .pn-graph .node { cursor: pointer; outline: none; }
+  .pn-graph .node .ring { fill: none; stroke-width: 2.5; stroke: var(--band-none); }
+  .pn-graph .node.band-strong .ring { stroke: var(--band-strong); } .pn-graph .node.band-likely .ring { stroke: var(--band-likely); }
+  .pn-graph .node.band-possible .ring { stroke: var(--band-possible); } .pn-graph .node.band-unlikely .ring { stroke: var(--band-unlikely); }
+  .pn-graph .node.t-identity .ring, .pn-graph .node.t-possible_identity .ring { stroke: var(--accent); stroke-width: 3; }
+  .pn-graph .node.t-possible_identity .ring { stroke-dasharray: 4 2; }
+  .pn-graph .node.t-vehicle .ring { stroke: var(--c-veh); }
+  .pn-graph .node:hover .ring, .pn-graph .node:focus .ring { stroke-width: 5; }
+  .pn-graph .node:focus-visible .ring { stroke: var(--accent); }
+  .pn-graph .centre { cursor: default; } .pn-graph .centre .ring { stroke: var(--ink); stroke-width: 3; }
+  .pn-graph .fillc { fill: var(--line); }
+  .pn-graph .glyph { font-size: 11px; fill: var(--muted); font-weight: 650; }
+  .pn-graph .nlabel { font-size: 10px; fill: var(--muted); paint-order: stroke; stroke: var(--panel-solid); stroke-width: 3px; }
+  .pn-graph .nlabel.strong { fill: var(--ink); font-weight: 650; }
+  .pn-graph .placeholder { fill: none; stroke: var(--line); stroke-dasharray: 4 4; }
+  .pn-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11.5px; color: var(--muted); margin-top: 4px; }
+  .pn-legend .sw { display: inline-block; width: 14px; height: 4px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+  .sw.band-strong { background: var(--band-strong); } .sw.band-likely { background: var(--band-likely); }
+  .sw.band-possible { background: var(--band-possible); } .sw.band-unlikely { background: var(--band-unlikely); }
+  .sw.ring-identity { background: var(--accent); } .sw.ring-vehicle { background: var(--c-veh); }
+  .pn-rel { list-style: none; padding: 0; margin: 0; }
+  .pn-rel-btn { width: 100%; display: flex; align-items: center; gap: 8px; border: none; border-bottom: 1px solid var(--line); border-radius: 0;
+    padding: 6px 2px; text-align: left; }
+  .pn-mini { width: 34px; height: 34px; border-radius: 6px; object-fit: cover; flex: 0 0 34px; background: var(--line); display: block; }
+  #pane .who { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  #pane .who small { color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #pane-card { position: absolute; left: 10px; right: 10px; bottom: 10px; max-height: 72%; overflow: auto; background: var(--panel-solid);
+    border: 1px solid var(--accent); border-radius: 10px; box-shadow: var(--shadow); padding: 10px 12px; }
+  .pn-card-head { display: flex; gap: 10px; align-items: flex-start; }
+  .pn-card-head .who { gap: 1px; }
+  #pane .who .chip, .pn-clip .meta .chip { align-self: flex-start; }
+  .pn-card-thumb { width: 64px; height: 64px; border-radius: 8px; object-fit: cover; flex: 0 0 64px; background: var(--line); display: block; }
+  .pn-video video { width: 100%; max-height: 240px; background: #000; border-radius: 8px; display: block; margin-top: 8px; }
+  .pn-player { min-height: 20px; }
+  .pn-clips { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 10px; margin-top: 8px; }
+  .pn-clip { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; }
+  .pn-clip.self { border-color: var(--accent); }
+  .pn-clip-play { position: relative; padding: 0; border: none; border-radius: 0; display: block; width: 100%; }
+  .pn-clip-img { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; display: block; background: var(--line); }
+  .pn-clip-play .play { position: absolute; right: 6px; bottom: 6px; background: rgba(0,0,0,.62); color: #fff; border-radius: 50%; width: 26px; height: 26px;
+    display: grid; place-items: center; font-size: 11px; }
+  .pn-clip .meta { padding: 6px 8px; display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+  .pn-clip .meta small { color: var(--muted); }
+  #pane .row { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 3px; }
+  .pn-strip { width: 100%; height: auto; display: block; margin-top: 6px; }
+  .pn-strip .axis { stroke: var(--line); stroke-width: 2; } .pn-strip .dot { fill: var(--band-none); }
+  .pn-strip .dot.band-strong { fill: var(--band-strong); } .pn-strip .dot.band-likely { fill: var(--band-likely); }
+  .pn-strip .dot.band-possible { fill: var(--band-possible); } .pn-strip .dot.band-unlikely { fill: var(--band-unlikely); }
+  .pn-strip .dot.unusual { stroke: var(--band-unlikely); stroke-width: 2; } .pn-strip .dot.cur { stroke: var(--ink); stroke-width: 2.5; }
+  .pn-strip .tick { font-size: 10px; fill: var(--muted); }
+  .pn-timeline { list-style: none; margin: 4px 0 0; padding: 0; }
+  .pn-timeline li { display: flex; align-items: center; gap: 8px; padding: 4px 2px; border-bottom: 1px solid var(--line); }
+  .pn-timeline li .row { margin: 0; }
+  .pn-timeline li.day { font-weight: 650; font-size: 12px; color: var(--muted); border: none; padding-top: 10px; }
+  .pn-timeline li.cur { background: var(--notice-bg); }
+  .pn-timeline li.vid { display: block; }
+  .pn-timeline .t { flex: 0 0 auto; min-width: 44px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .pn-alert { margin: 4px 0; font-size: 12.5px; }
+  @media (max-width: 560px) {
+    #pane { left: 0 !important; right: 0; top: auto !important; bottom: 0; width: 100%; max-width: 100%; max-height: 78dvh;
+      border-radius: 14px 14px 0 0; border-bottom: none; }
+    #pane-head { cursor: default; padding-top: 16px; position: relative; }
+    #pane .grab { display: block; position: absolute; top: 6px; left: 50%; width: 40px; height: 4px; margin-left: -20px; border-radius: 2px; background: var(--line); }
+    #pane .chips { max-width: 34%; }
+    #pane-card { left: 6px; right: 6px; bottom: 6px; max-height: 82%; }
+    .pn-kv { grid-template-columns: 1fr; gap: 0; } .pn-kv dd { margin-bottom: 4px; }
+  }
+  @media (max-width: 560px) {
+    #legend { width: 100%; align-self: stretch; }
+    #top h1 { flex-basis: 100%; }
+    #status { margin-left: 0; flex-basis: 100%; }
+    #opacity { width: 80px; }
+  }
+  #back-persons { display: inline-flex; align-items: center; height: 30px; padding: 0 10px; margin-right: 6px; border-radius: 6px;
+    color: var(--accent); font-weight: 600; font-size: 13px; text-decoration: none; border: 1px solid var(--line); background: var(--panel-solid); }
+  #back-persons:hover { background: var(--notice-bg); }
+  #back-persons:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+    "@mkkellogg/gaussian-splats-3d": "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.4.7/build/gaussian-splats-3d.module.js"
+} }
+</script>
+</head>
+<body>
+<div id="app">
+  <canvas id="c" tabindex="0" aria-label="3D replay of the visit. Drag to orbit. Press Enter or I to inspect the person."></canvas>
+  <div id="picktip" class="tip" hidden aria-hidden="true">Click for details</div>
+  <section id="pane" role="dialog" aria-modal="false" aria-labelledby="pane-title" hidden>
+    <header id="pane-head">
+      <span class="grab" aria-hidden="true"></span>
+      <div id="pane-avatar" class="avatar"></div>
+      <div class="ttl"><h2 id="pane-title">Visit</h2><div id="pane-sub"></div></div>
+      <div id="pane-chips" class="chips"></div>
+      <button id="pane-min" class="pn-x" aria-expanded="true" aria-label="collapse or expand" title="collapse">▾</button>
+      <button id="pane-close" class="pn-x" aria-label="close details" title="close (Esc)">×</button>
+    </header>
+    <div id="pane-notice" hidden></div>
+    <nav id="pane-tabs" role="tablist" aria-label="visit details"></nav>
+    <div id="pane-body" role="tabpanel" tabindex="0"></div>
+    <div id="pane-card" role="region" hidden></div>
+  </section>
+  <div id="hud">
+  <div id="top" class="panel">
+    <a id="back-persons" href="../" title="Back to the Persons visitor log" aria-label="Back to Persons">&#8592; Persons</a>
+    <h1>Trajectory replay</h1>
+    <button id="play" aria-pressed="false">Play</button>
+    <button id="fit">Fit view</button>
+    <button id="camview">Camera view</button>
+    <button id="theme" title="toggle light/dark">Theme</button>
+    <button id="inspect" aria-haspopup="dialog" aria-expanded="false" aria-controls="pane" title="details of this visit: analysis, face, related sightings, clips, timeline (or click the person; key I)">Inspect person</button>
+    <span id="status">loading…</span>
+    <div class="row">
+      <label>Sample <select id="sample" aria-label="sample recording">
+        <option value="demo/demo.json">Stock walk (calibrated demo)</option>
+        <option value="" data-own="1" hidden>This sighting</option>
+      </select></label>
+      <label>Scene <select id="scene" aria-label="scene">
+        <option value="plain">Plain ground</option>
+        <option value="projection">Camera projection</option>
+        <option value="splat">Gaussian splat</option>
+        <option value="both">Splat + projection</option>
+      </select></label>
+      <label id="opacitylbl" hidden>Projection <input id="opacity" type="range" min="0" max="1" step="0.05" value="1" aria-label="projection opacity"></label>
+      <label>Video cut-outs <select id="cutouts" aria-label="video cut-outs">
+        <option value="off">Off</option>
+        <option value="current">Current frame</option>
+        <option value="trail">With trail</option>
+        <option value="ghost">All (ghosts)</option>
+      </select></label>
+      <label id="bodylbl" hidden>Body <select id="body" aria-label="body model">
+        <option value="mesh">3D body (SMPL)</option>
+        <option value="both">3D body + stick figure</option>
+        <option value="joints">3D body joints</option>
+        <option value="stick">Stick figure only</option>
+      </select></label>
+      <label id="rigfeetlbl" hidden title="heels and toes from the IK rig"><input id="rigfeet" type="checkbox" checked> Rig feet</label>
+      <label id="objlbl" hidden><input id="objects" type="checkbox" checked> 3D objects</label>
+      <label><input id="overlays" type="checkbox" checked> Path and markers</label>
+    </div>
+  </div>
+  <details id="legend" class="panel" open>
+    <summary>Legend</summary>
+    <ul>
+      <li><span class="sw grad"></span><div><b>Path</b>: where the person most likely was, coloured by time, blue at the start to red at the end.</div></li>
+      <li><span class="sw dash"></span><div><b>Dashed, faded path</b>: no detection in those frames (missed or hidden); the position is filled in by the motion model.</div></li>
+      <li><span class="sw" style="background:var(--c-ellipse);opacity:.45"></span><div><b>Ground ellipses</b>: the 95 % region for the position at that moment. Bigger where less is known (far away, during gaps).</div></li>
+      <li><span class="sw" style="background:linear-gradient(90deg,var(--c-foot-l) 50%,var(--c-foot-r) 50%)"></span><div><b>Footprints</b> (green L, blue R): placed from the walking speed and step rate, not seen in the video. Faded = estimated.</div></li>
+      <li><span class="sw" style="background:var(--c-pred);opacity:.5"></span><div><b>Orange cone</b>: a guess of the next 2.5 s. It widens quickly because a person can turn at any time.</div></li>
+      <li class="lg-aerial" hidden><span class="sw" style="background:#8a9a6b"></span><div><b>Aerial photo</b>: USGS NAIP (public domain) under the path, lined up by the map calibration; grid squares are 1 m.</div></li>
+      <li class="lg-gaze" hidden><span class="sw" style="background:var(--c-gaze)"></span><div><b>View cone</b>: the way the head was facing (from nose, eyes and ears; about ±25°), not eye gaze. Bright = central 60°, faint = the 120° a person can see.</div></li>
+      <li><span class="sw" style="background:var(--c-skel)"></span><div><b>Stick figure</b>: rough 3D pose from the keypoints, standing on the path; faded while filled in.</div></li>
+      <li class="lg-body" hidden><span class="sw" style="background:var(--c-body)"></span><div><b>3D body</b>: a full body shape (SMPL). On rig replays it is dressed onto the IK rig (same position, bone lengths and joint angles, every calibrated camera); on older samples it was fitted offline by WHAM. Legs that were out of every camera's view are guessed.</div></li>
+      <li class="lg-bodyj" hidden><span class="sw" style="background:var(--c-body);opacity:.6"></span><div><b>3D body joints</b>: the joints of the fitted body, drawn like the stick figure.</div></li>
+      <li><span class="sw" style="background:var(--c-cam)"></span><div><b>Camera</b>: where the Wyze camera is and what it sees (frustum). Grid squares are 1 m.</div></li>
+      <li><span class="sw" style="background:var(--c-zone);opacity:.4"></span><div><b>Zone</b>: a named ground area (time spent in it is in the readout).</div></li>
+      <li id="truthrow" hidden><span class="sw" style="background:var(--c-truth)"></span><div><b>Grey line</b>: true path (synthetic data only).</div></li>
+      <li class="lg-cut" hidden><span class="sw cut"></span><div><b>Video cut-out</b>: the person as the camera filmed them at that moment, pasted on a flat card standing on the path and turned towards the camera. Exact in <i>Camera view</i>; from the side it is a paper figure.</div></li>
+      <li class="lg-ghost" hidden><span class="sw ghost"></span><div><b>Faded cut-outs</b>: earlier moments (trail) or the whole visit at once (ghosts).</div></li>
+      <li class="lg-proj" hidden><span class="sw proj"></span><div><b>Camera projection</b>: the camera's own picture, with the person removed, laid on the ground. Right for flat ground; anything standing up (trees, walls, cars) is smeared away from the camera.</div></li>
+      <li class="lg-proj" hidden><span class="sw backdrop"></span><div><b>Backdrop</b>: a curved screen <span class="range">30</span> m from the camera holding what is above the horizon (sky, tree tops, far houses).</div></li>
+      <li class="lg-splat" hidden><span class="sw splat"></span><div><b>Splat scene</b>: a 3D scan of the place (Gaussian splatting), lined up with the camera by hand. Turn on <i>Splat + projection</i> to check the alignment.</div></li>
+    </ul>
+  </details>
+  </div>
+  <div id="bottom" class="panel">
+    <span id="tlabel" style="font-variant-numeric:tabular-nums;min-width:62px">0.0 s</span>
+    <input id="time" type="range" min="0" max="1" step="0.01" value="0" aria-label="time">
+    <div id="readout">
+      <span>speed <b id="spd">–</b></span>
+      <span>status <b id="obs">–</b></span>
+      <span>position <b id="pos">–</b></span>
+      <span>path <b id="plen">–</b></span>
+      <span>stops <b id="stops">–</b></span>
+      <span id="zonesro" hidden>zones <b id="zones">–</b></span>
+      <span id="err"></span>
+    </div>
+  </div>
+</div>
+<script>
+  window.addEventListener('error', (e) => { const el = document.getElementById('err'); if (el) el.textContent = 'error: ' + (e.message || e); });
+  window.addEventListener('unhandledrejection', (e) => { const el = document.getElementById('err'); if (el) el.textContent = 'error: ' + (e.reason && e.reason.message || e.reason); });
+</script>
+<script type="module" src="viewer.js"></script>
+</body>
+</html>

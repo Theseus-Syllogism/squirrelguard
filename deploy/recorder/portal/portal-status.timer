@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh the camstack portal status every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

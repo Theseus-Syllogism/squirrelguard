@@ -1,0 +1,36 @@
+#!/bin/bash
+# gpuserver uplink failover (installed 2026-11-14). Gateways in priority order; each is tested through its own
+# probe address (a /32 host route via that gateway), and the default route follows the best healthy one:
+#   192.0.2.1  laptop lan-gw (primary)        probe 1.0.0.1
+#   192.0.2.20   recorder host, NATs gpuserver out its Wi-Fi  probe 149.112.112.112  (recorder host: lan-uplink-nat.service)
+# Switch away after 2 failed checks in a row; switch back to a higher-priority gateway after 3 good ones.
+# Stopping the service restores the primary default route (rollback = systemctl disable --now uplink-failover).
+set -u
+DEV=${DEV:-vmbr0}
+GWS=(${GWS:-192.0.2.1 192.0.2.20})
+declare -A PROBE=([192.0.2.1]=1.0.0.1 [192.0.2.20]=149.112.112.112)
+INTERVAL=${INTERVAL:-10}
+declare -A good bad
+log() { echo "$*"; logger -t uplink-failover "$*"; }
+cur() { ip -4 route show default | awk '{for(i=1;i<=NF;i++) if($i=="via"){print $(i+1); exit}}'; }
+restore() { ip route replace default via "${GWS[0]}" dev "$DEV"; for g in "${GWS[@]}"; do ip route del "${PROBE[$g]}/32" 2>/dev/null; done; log "stopped: default via ${GWS[0]}"; exit 0; }
+trap restore TERM INT
+for g in "${GWS[@]}"; do good[$g]=0; bad[$g]=0; done
+while true; do
+    for g in "${GWS[@]}"; do
+        ip route replace "${PROBE[$g]}/32" via "$g" dev "$DEV" 2>/dev/null
+        if ping -n -q -c2 -i0.3 -W2 "${PROBE[$g]}" >/dev/null 2>&1; then good[$g]=$((good[$g]+1)); bad[$g]=0
+        else bad[$g]=$((bad[$g]+1)); good[$g]=0; fi
+    done
+    c=$(cur); want=""
+    for g in "${GWS[@]}"; do
+        if [ "$g" = "$c" ]; then [ "${bad[$g]}" -lt 2 ] && { want=$g; break; }
+        elif [ "${good[$g]}" -ge 3 ]; then want=$g; break; fi
+    done
+    if [ -n "$want" ] && [ "$want" != "$c" ]; then
+        ip route replace default via "$want" dev "$DEV" && log "default route: ${c:-none} -> $want"
+    elif [ -z "$want" ] && [ -n "$c" ] && [ "${bad[$c]:-0}" -eq 2 ]; then
+        log "no healthy uplink (current $c)"
+    fi
+    sleep "$INTERVAL"
+done

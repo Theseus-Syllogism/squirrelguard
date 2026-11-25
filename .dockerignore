@@ -1,0 +1,6 @@
+# Only the detector code goes into the image: no config, secrets, models, events or weights.
+*
+!squirrel_guard/
+!scripts/export_model.py
+**/__pycache__/
+squirrel_guard/third_party/

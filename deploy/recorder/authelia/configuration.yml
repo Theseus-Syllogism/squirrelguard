@@ -1,0 +1,92 @@
+# Authelia: single sign-on for every camstack web UI (nginx auth_request on the recorder host).
+# Users: /srv/camstack/authelia/users/users.yml (set-password.sh). Secrets: /srv/camstack/authelia/secrets/* (never committed),
+# passed in as *_FILE environment variables by compose.yaml.
+theme: auto
+
+server:
+  address: 'tcp://127.0.0.1:9091/'
+
+log:
+  level: info
+
+totp:
+  issuer: 'cam.example.org'
+
+webauthn:
+  disable: false
+  display_name: 'Camstack'
+  enable_passkey_login: true          # passkey can replace password + second factor
+  selection_criteria:
+    user_verification: preferred
+
+authentication_backend:
+  password_reset:
+    disable: true                     # one admin account; reset by re-running set-password.sh
+  file:
+    path: /config/users/users.yml
+    watch: true
+    password:
+      algorithm: argon2
+
+password_policy:
+  zxcvbn:
+    enabled: true
+    min_score: 3
+
+access_control:
+  default_policy: deny
+  rules:
+    # signed one-tap /act/ links in alert emails and ntfy carry their own HMAC signature
+    - domain: 'persons.cam.example.org'
+      resources: ['^/act/']
+      policy: bypass
+    # Uptime Kuma's Grafana check (returns only {"database":"ok",...})
+    - domain: 'grafana.cam.example.org'
+      resources: ['^/api/health$']
+      policy: bypass
+    # 'family' (users/family-password.sh): Frigate only, password only. Frigate maps non-admin groups to its
+    # read-only viewer role (proxy.header_map.role_map / default_role on gpuserver).
+    - domain: 'frigate.cam.example.org'
+      subject: 'group:family'
+      policy: one_factor
+    - domain: ['cam.example.org', '*.cam.example.org']
+      subject: 'group:admins'
+      policy: two_factor
+    # review-interface roles (persons-ui access.py): the persons site only, password + 2FA. The app maps the group
+    # to viewer / investigator / supervisor; admins are supervisors.
+    - domain: 'persons.cam.example.org'
+      subject: ['group:sg-viewer', 'group:sg-investigator', 'group:sg-supervisor']
+      policy: two_factor
+
+session:
+  name: camstack_session
+  same_site: lax
+  expiration: 12h
+  inactivity: 4h
+  remember_me: 30d
+  cookies:
+    - domain: 'cam.example.org'
+      authelia_url: 'https://auth.cam.example.org'
+      default_redirection_url: 'https://cam.example.org'
+
+regulation:
+  max_retries: 5
+  find_time: 5m
+  ban_time: 30m
+
+storage:
+  postgres:
+    address: 'tcp://127.0.0.1:5432'
+    database: authelia
+    username: authelia
+    tls:
+      skip_verify: true               # loopback to the shared PostgreSQL
+
+notifier:
+  # one-time codes for registering a passkey/TOTP device go out through Proton Bridge on this host
+  smtp:
+    address: 'submission://127.0.0.1:1025'
+    # username, sender and password come from AUTHELIA_NOTIFIER_SMTP_* in compose.yaml (the camstack SMTP_* values)
+    subject: '[Camstack] {title}'
+    tls:
+      skip_verify: true               # Bridge's self-signed localhost certificate

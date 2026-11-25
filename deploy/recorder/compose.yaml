@@ -1,0 +1,303 @@
+# Camera support services on db-host (recorder host, 192.0.2.20). Deployed to /srv/camstack by setup.sh.
+# The recorder host has no AVX/GPU: nothing here does inference or transcoding.
+name: camstack
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0.20
+    restart: unless-stopped
+    # host network: the bridge (also host network) then reaches it over loopback, which the recorder host's inline Suricata
+    # exempts. Through docker-proxy it inspected MQTT and dropped PUBACKs (2229001), stalling QoS 1 sessions.
+    network_mode: host
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/passwd:/mosquitto/config/passwd:ro
+      - mosquitto-data:/mosquitto/data
+    mem_limit: 128m
+
+  ntfy:
+    image: binwiederhier/ntfy:v2.11.0
+    restart: unless-stopped
+    command: serve
+    ports: ["8090:80"]
+    volumes:
+      - ./ntfy/server.yml:/etc/ntfy/server.yml:ro
+      - ntfy-data:/var/lib/ntfy
+      - ntfy-cache:/var/cache/ntfy
+    environment:
+      TZ: America/Denver
+    mem_limit: 128m
+
+  grafana:
+    image: grafana/grafana-oss:11.4.0
+    restart: unless-stopped
+    # host network: PostgreSQL on this box listens on 127.0.0.1 only
+    network_mode: host
+    env_file: .env
+    environment:
+      GF_SERVER_HTTP_PORT: "3001"
+      GF_SECURITY_ADMIN_USER: admin
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # single sign-on: only nginx (127.0.0.1) reaches Grafana and passes Authelia's Remote-User
+      GF_SERVER_HTTP_ADDR: 127.0.0.1
+      GF_SERVER_ROOT_URL: https://grafana.cam.example.org/
+      GF_AUTH_PROXY_ENABLED: "true"
+      GF_AUTH_PROXY_HEADER_NAME: Remote-User
+      GF_AUTH_PROXY_HEADER_PROPERTY: username
+      GF_AUTH_PROXY_HEADERS: "Email:Remote-Email Name:Remote-Name"
+      GF_AUTH_PROXY_AUTO_SIGN_UP: "true"
+      GF_AUTH_PROXY_WHITELIST: 127.0.0.1
+      GF_USERS_AUTO_ASSIGN_ORG_ROLE: Admin      # Authelia admits only group "admins"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_AUTH_SIGNOUT_REDIRECT_URL: https://auth.cam.example.org/logout
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    mem_limit: 384m
+
+  bridge:
+    build: ./bridge
+    image: camstack-bridge:local
+    restart: unless-stopped
+    # host network: Postgres (127.0.0.1:5432), MQTT and ntfy are reached on localhost
+    network_mode: host
+    env_file: .env
+    environment:
+      MQTT_HOST: 127.0.0.1
+      NTFY_URL: http://127.0.0.1:8090/squirrels
+      PERSONS_UI_URL: https://persons.cam.example.org     # links in alerts/reports (SSO)
+      SNAPSHOT_DIR: /data/snapshots
+      DETER_TARGET_FRONTYARD: root@198.51.100.103   # camera; the key there only runs /etc/deter/deter.sh
+    volumes:
+      - ./snapshots:/data/snapshots
+      - ./deter:/deter:ro                     # deter SSH key + pinned camera host key
+    depends_on: [mosquitto, ntfy]
+    mem_limit: 128m
+
+  go2rtc:
+    image: alexxit/go2rtc:1.9.9
+    restart: unless-stopped
+    ports: ["127.0.0.1:1984:1984", "8554:8554"]   # web UI/API (SSO via nginx only) and RTSP restream (auth; gpuserver)
+    env_file: .env
+    volumes:
+      - ./go2rtc/go2rtc.yaml:/config/go2rtc.yaml:ro
+    mem_limit: 256m
+
+  recorder:
+    build: ./recorder
+    image: camstack-recorder:local
+    restart: unless-stopped
+    command: ["/usr/local/bin/record.sh"]
+    env_file: .env
+    environment:
+      CAMERA: frontyard
+      SEGMENT_S: "600"
+      TZ: America/Denver
+    volumes:
+      # /mnt/cloning is a manual NTFS mount: refuse to start rather than fill the system disk
+      - type: bind
+        source: /mnt/cloning/camstack-video
+        target: /recordings
+        bind: {create_host_path: false}
+    depends_on: [go2rtc]
+    mem_limit: 256m
+
+  recorder-v4:
+    # second camera (Wyze Cam v4 on Thingino, 2560x1440): same recorder image, own folder /recordings/v4
+    image: camstack-recorder:local
+    pull_policy: never   # built by the recorder service
+    restart: unless-stopped
+    command: ["/usr/local/bin/record.sh"]
+    env_file: .env
+    environment:
+      CAMERA: v4
+      SEGMENT_S: "600"
+      TZ: America/Denver
+    volumes:
+      - type: bind
+        source: /mnt/cloning/camstack-video
+        target: /recordings
+        bind: {create_host_path: false}
+    depends_on: [go2rtc]
+    mem_limit: 256m
+
+  snapshot:
+    # latest frame for the portal page (https://198.51.100.20/live.jpg), keyframes of the sub stream only
+    image: camstack-recorder:local
+    restart: unless-stopped
+    command: ["/usr/local/bin/snapshot.sh"]
+    env_file: .env
+    environment:
+      CAMERA: frontyard
+    volumes:
+      - /srv/camstack/portal/snap:/snap
+    depends_on: [go2rtc, recorder]
+    mem_limit: 128m
+    cpus: 0.5
+
+  snapshot-v4:
+    # latest v4 frame for the portal (live_v4.jpg)
+    image: camstack-recorder:local
+    pull_policy: never
+    restart: unless-stopped
+    command: ["/usr/local/bin/snapshot.sh"]
+    env_file: .env
+    environment:
+      CAMERA: v4
+      SNAP_FILE: live_v4.jpg
+    volumes:
+      - /srv/camstack/portal/snap:/snap
+    depends_on: [go2rtc]
+    mem_limit: 128m
+    cpus: 0.5
+
+  janitor:
+    image: camstack-recorder:local
+    pull_policy: never   # built by the recorder service
+    restart: unless-stopped
+    command: ["/usr/local/bin/janitor.sh"]
+    env_file: .env       # KUMA_PUSH_URL
+    environment:
+      RETAIN_DAYS: "7"
+      RETAIN_MAX_GB: "350"
+      TZ: America/Denver
+    volumes:
+      - type: bind
+        source: /mnt/cloning/camstack-video
+        target: /recordings
+        bind: {create_host_path: false}
+    depends_on: [recorder]
+    mem_limit: 64m
+
+  uptime-kuma:
+    image: louislam/uptime-kuma:1.23.16
+    restart: unless-stopped
+    ports: ["127.0.0.1:3002:3001"]     # SSO via nginx only (uptime.cam.example.org)
+    volumes:
+      - kuma-data:/app/data
+    mem_limit: 384m
+
+  filebrowser:
+    image: filebrowser/filebrowser:v2.31.2
+    restart: unless-stopped
+    ports: ["127.0.0.1:8091:80"]       # SSO via nginx only (files.cam.example.org)
+    user: "1000:1000"
+    command: ["--database", "/database/filebrowser.db", "--root", "/srv", "--address", "0.0.0.0", "--port", "80"]
+    volumes:
+      - filebrowser-db:/database
+      - type: bind
+        source: /mnt/cloning/camstack-video
+        target: /srv/recordings
+        read_only: true
+        bind: {create_host_path: false}
+      - ./snapshots:/srv/snapshots:ro
+    mem_limit: 128m
+
+  persons-ui:
+    # Person identities review (private visitor log): https://persons.cam.example.org (SSO via nginx)
+    build: ./persons-ui
+    image: camstack-persons-ui:local
+    restart: unless-stopped
+    network_mode: host          # Postgres is on 127.0.0.1
+    env_file: .env
+    environment:
+      PORT: "8092"
+      TZ: America/Denver          # page times in local time (container default is UTC)
+      HOST: 127.0.0.1
+      TRUST_PROXY_USER: "1"
+      CROP_DIR: /data/snapshots/persons
+      EVIDENCE_STORE: /data/evidence-store
+      EVIDENCE_KEYS: /data/evidence-keys
+      TSA_URL: ${TSA_URL-http://timestamp.digicert.com}    # RFC 3161, only a hash is sent; TSA_URL= in .env (empty) = none
+      # ROLE_GROUPS: "supervisor=admins,sg-supervisor;investigator=sg-investigator;viewer=sg-viewer"   (the default)
+      FRIGATE_URL: https://frigate.cam.example.org
+    volumes:
+      - ./snapshots:/data/snapshots:ro
+      - ./evidence-store:/data/evidence-store   # evidence packages (written once, then read-only files); owner uid 1000
+      - ./evidence-keys:/data/evidence-keys     # Ed25519 signing key (created on first export, mode 600); back it up
+      - ./ledger:/ledger:ro                     # capture-time seals of the recording segments (sealer service)
+      - type: bind                              # continuous recording, read-only: segments go into evidence packages
+        source: /mnt/cloning/camstack-video
+        target: /recordings
+        read_only: true
+        bind: {create_host_path: false}
+      - ./replay:/app/replay:ro     # 3D trajectory replay viewer (static)
+    mem_limit: 1g               # release copies decode video and run two detectors
+
+  sealer:
+    # capture-time seals: hashes every closed recording segment into a per-camera hash chain (./ledger), and has
+    # the chain head timestamped by an outside service once a day (recorder/seal.py, docs/evidence-export.md)
+    image: camstack-recorder:local
+    pull_policy: never   # built by the recorder service
+    restart: unless-stopped
+    command: ["python3", "/usr/local/bin/seal.py"]
+    environment:
+      SEGMENT_S: "600"
+      TSA_URL: ${TSA_URL-http://timestamp.digicert.com}
+      TZ: America/Denver
+    volumes:
+      - type: bind
+        source: /mnt/cloning/camstack-video
+        target: /recordings
+        read_only: true
+        bind: {create_host_path: false}
+      - ./ledger:/ledger
+    depends_on: [recorder]
+    mem_limit: 128m
+
+  authelia:
+    # Single sign-on for every web UI: nginx (portal/camstack-sso.conf.in) asks it before proxying anything.
+    image: authelia/authelia:4.39.28
+    restart: unless-stopped
+    network_mode: host          # listens on 127.0.0.1:9091; PostgreSQL and Proton Bridge are on loopback too
+    user: "0:0"
+    environment:
+      TZ: America/Denver
+      AUTHELIA_IDENTITY_VALIDATION_RESET_PASSWORD_JWT_SECRET_FILE: /secrets/jwt
+      AUTHELIA_SESSION_SECRET_FILE: /secrets/session
+      AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE: /secrets/storage_key
+      AUTHELIA_STORAGE_POSTGRES_PASSWORD_FILE: /secrets/pg_password
+      AUTHELIA_NOTIFIER_SMTP_PASSWORD_FILE: /secrets/smtp_password
+      AUTHELIA_NOTIFIER_SMTP_USERNAME: ${SMTP_USER}
+      AUTHELIA_NOTIFIER_SMTP_SENDER: "Camstack sign-in <${SMTP_FROM}>"
+    volumes:
+      - ./authelia/configuration.yml:/config/configuration.yml:ro
+      - ./authelia/users:/config/users:ro      # users.yml, written by authelia/set-password.sh
+      - ./authelia/secrets:/secrets:ro
+    mem_limit: 128m
+
+  easelscan:
+    # Easel notes: Logitech C525 on the Pi -> straightened page -> gpuserver vision LLM (swap gateway /q35)
+    # -> PDF / Markdown / JSON / reminders .ics in ./easelscan/notes + ntfy topic "notes". docs/easelscan.md
+    # Capture runs over SSH with a key the Pi locks to one ffmpeg command (no shell, from 198.51.100.20 only).
+    build: ./easelscan
+    image: camstack-easelscan:local
+    restart: unless-stopped
+    network_mode: host                     # Wi-Fi route to the Pi, 192.0.2.30 (gpuserver), ntfy on 127.0.0.1:8090
+    env_file: .env                         # NTFY_PUB_TOKEN (shared with the bridge)
+    environment:
+      TZ: America/Denver
+      EASEL_CAPTURE_CMD: >-
+        ssh -i /keys/id_easel -o UserKnownHostsFile=/keys/known_hosts -o BatchMode=yes -o ConnectTimeout=10
+        pi@198.51.100.1 capture
+      EASEL_CALIB: /config/calib.json
+      EASEL_OUT: /notes
+      EASEL_LLM_URL: http://192.0.2.30:5990/q35
+      EASEL_INTERVAL_S: "600"
+      EASEL_VOCAB: "QWEN,easel,sticky notes,NVMe,Lenovo Yoga,e-reader,journaling,principle,laptop,AI agents,deep web,planning,digitizes,transcribes"
+      NTFY_URL: http://127.0.0.1:8090/notes
+    volumes:
+      - ./easelscan/keys:/keys:ro
+      - ./easelscan/calib.json:/config/calib.json:ro
+      - ./easelscan/notes:/notes
+    mem_limit: 512m
+
+volumes:
+  kuma-data:
+  filebrowser-db:
+  mosquitto-data:
+  ntfy-data:
+  ntfy-cache:
+  grafana-data:

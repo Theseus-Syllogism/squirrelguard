@@ -1,0 +1,14 @@
+apiVersion: 1
+datasources:
+  - name: squirrelguard
+    uid: squirrelguard-pg
+    type: grafana-postgresql-datasource
+    url: 127.0.0.1:5432
+    user: $PG_USER
+    isDefault: true
+    jsonData:
+      database: $PG_DB
+      sslmode: require   # Grafana's driver rejects "prefer"; the recorder host Postgres has TLS
+      postgresVersion: 1500
+    secureJsonData:
+      password: $PG_PASS

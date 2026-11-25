@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Avatar 4D</title>
+<!-- Plays a 4D Gaussian-splat avatar export (scripts/avatar4d_train.py export -> multicam_avatar.json + .bin) in the
+     replay world frame (Z up, metres). Own WebGL splat renderer: per-frame CPU skinning (top-4 LBS + non-rigid offsets),
+     per-frame CPU depth sort, EWA projection in the vertex shader. SMPL-derived data: local use only.
+     Load: ?src=demo/multicam_avatar (default) or pick the .json and .bin with the file buttons. -->
+<style>
+  :root { --bg: #15181c; --fg: #d8dde3; --mut: #8a929c; --acc: #4aa3ff; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 13px system-ui, sans-serif; }
+  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  #ui { position: fixed; left: 0; right: 0; bottom: 0; padding: 10px 16px; display: flex; gap: 10px; align-items: center;
+        background: rgba(20, 22, 26, .85); flex-wrap: wrap; }
+  #ui input[type=range] { flex: 1; min-width: 120px; }
+  button, label.file { background: #2a2f36; color: var(--fg); border: 1px solid #3a414a; border-radius: 4px; padding: 4px 10px; cursor: pointer; }
+  #info { position: fixed; top: 8px; left: 16px; color: var(--mut); max-width: calc(100% - 32px); }
+  input[type=file] { display: none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="info">loading...</div>
+<div id="ui">
+  <button id="play">Pause</button>
+  <input id="scrub" type="range" min="0" max="0" value="0">
+  <span id="fl">0 / 0</span>
+  <label><input id="follow" type="checkbox" checked> follow</label>
+  <label class="file">open .json + .bin<input id="files" type="file" multiple accept=".json,.bin"></label>
+</div>
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const canvas = document.getElementById('c');
+const info = document.getElementById('info');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x15181c);
+const camera = new THREE.PerspectiveCamera(45, 1, 0.05, 200);
+camera.up.set(0, 0, 1);
+camera.position.set(4, -4, 2.2);
+const controls = new OrbitControls(camera, canvas);
+controls.target.set(0, 0, 0.9);
+const grid = new THREE.GridHelper(20, 40, 0x3a414a, 0x262b31);
+grid.rotation.x = Math.PI / 2;
+scene.add(grid);
+scene.add(new THREE.AxesHelper(0.5));
+
+const VS = `
+  attribute vec3 iCenter; attribute vec3 iCovA; attribute vec3 iCovB; attribute vec4 iColor;
+  uniform vec2 focal; uniform vec2 viewport;
+  varying vec4 vColor; varying vec2 vPos;
+  void main() {
+    vec4 cam = modelViewMatrix * vec4(iCenter, 1.0);
+    vec4 clip = projectionMatrix * cam;
+    float d = -cam.z;
+    if (d < 0.05) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
+    mat3 V = mat3(iCovA.x, iCovA.y, iCovA.z, iCovA.y, iCovB.x, iCovB.y, iCovA.z, iCovB.y, iCovB.z);
+    mat3 J = mat3(focal.x / d, 0.0, 0.0,  0.0, focal.y / d, 0.0,
+                  focal.x * cam.x / (d * d), focal.y * cam.y / (d * d), 0.0);
+    mat3 T = J * mat3(modelViewMatrix);
+    mat3 c2 = T * V * transpose(T);
+    float a = c2[0][0] + 0.3, b = c2[0][1], c = c2[1][1] + 0.3;
+    float mid = 0.5 * (a + c), r = length(vec2(0.5 * (a - c), b));
+    float l1 = mid + r, l2 = max(mid - r, 0.1);
+    vec2 dir = normalize(abs(b) > 1e-9 ? vec2(b, l1 - a) : (a >= c ? vec2(1.0, 0.0) : vec2(0.0, 1.0)));
+    vec2 ax1 = min(sqrt(2.0 * l1), 1024.0) * dir;
+    vec2 ax2 = min(sqrt(2.0 * l2), 1024.0) * vec2(-dir.y, dir.x);
+    vColor = iColor;
+    vPos = position.xy;
+    vec2 off = (position.x * ax1 + position.y * ax2) * 2.0 / viewport;
+    gl_Position = vec4(clip.xy / clip.w + off, clip.z / clip.w, 1.0);
+  }`;
+const FS = `
+  varying vec4 vColor; varying vec2 vPos;
+  void main() {
+    float A = -dot(vPos, vPos);
+    if (A < -4.0) discard;
+    float al = exp(A) * vColor.a;
+    if (al < 1.0 / 255.0) discard;
+    gl_FragColor = vec4(vColor.rgb, al);
+  }`;
+
+let av = null, mesh = null, frame = 0, playing = true, lastT = 0, acc = 0, dirty = true;
+const scrub = document.getElementById('scrub'), fl = document.getElementById('fl');
+document.getElementById('play').onclick = (e) => { playing = !playing; e.target.textContent = playing ? 'Pause' : 'Play'; };
+scrub.oninput = () => { frame = +scrub.value; dirty = true; };
+controls.addEventListener('change', () => { dirty = true; });
+
+function view(buf, L) {
+  const T = { float32: Float32Array, uint8: Uint8Array, int8: Int8Array }[L.dtype];
+  return new T(buf, L.offset, L.bytes / T.BYTES_PER_ELEMENT);
+}
+
+function setup(hdr, buf) {
+  const L = hdr.layout, n = hdr.count;
+  av = { hdr, n, F: hdr.frames, xyz: view(buf, L.xyz), cov: view(buf, L.cov6), rgba: view(buf, L.rgba),
+         jt: view(buf, L.joints), jw: view(buf, L.jweights), bones: view(buf, L.bones), off: view(buf, L.offsets),
+         os: hdr.offset_scale, world: new Float32Array(n * 3), wcov: new Float32Array(n * 6),
+         depth: new Float32Array(n), order: new Uint32Array(n), cnt: new Uint32Array(65536) };
+  if (mesh) scene.remove(mesh);
+  const g = new THREE.InstancedBufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-2, -2, 0, 2, -2, 0, 2, 2, 0, -2, 2, 0]), 3));
+  g.setIndex([0, 1, 2, 0, 2, 3]);
+  const mk = (k, size) => { const a = new THREE.InstancedBufferAttribute(new Float32Array(n * size), size); a.setUsage(THREE.DynamicDrawUsage); g.setAttribute(k, a); return a; };
+  av.aC = mk('iCenter', 3); av.aA = mk('iCovA', 3); av.aB = mk('iCovB', 3); av.aCol = mk('iColor', 4);
+  g.instanceCount = n;
+  const mat = new THREE.ShaderMaterial({ vertexShader: VS, fragmentShader: FS, transparent: true, depthWrite: false,
+    depthTest: true, blending: THREE.NormalBlending,
+    uniforms: { focal: { value: new THREE.Vector2() }, viewport: { value: new THREE.Vector2() } } });
+  mesh = new THREE.Mesh(g, mat);
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+  scrub.max = av.F - 1;
+  frame = 0; dirty = true;
+  info.textContent = `${n.toLocaleString()} Gaussians, ${av.F} frames (replay frames ${hdr.rig_frame[0]}..${hdr.rig_frame.at(-1)}), ` +
+    `${hdr.frame}. ${hdr.licence}`;
+}
+
+function skin(f) {
+  const { n, xyz, cov, jt, jw, bones, off, os, world, wcov } = av;
+  const B = bones.subarray(f * 24 * 12, (f + 1) * 24 * 12);
+  const O = off.subarray(f * n * 3, (f + 1) * n * 3);
+  const M = new Float32Array(12);
+  for (let i = 0; i < n; i++) {
+    M.fill(0);
+    for (let k = 0; k < 4; k++) {
+      const w = jw[i * 4 + k] / 255; if (!w) continue;
+      const b = jt[i * 4 + k] * 12;
+      for (let e = 0; e < 12; e++) M[e] += w * B[b + e];
+    }
+    const x = xyz[i * 3] + O[i * 3] * os, y = xyz[i * 3 + 1] + O[i * 3 + 1] * os, z = xyz[i * 3 + 2] + O[i * 3 + 2] * os;
+    world[i * 3] = M[0] * x + M[1] * y + M[2] * z + M[3];
+    world[i * 3 + 1] = M[4] * x + M[5] * y + M[6] * z + M[7];
+    world[i * 3 + 2] = M[8] * x + M[9] * y + M[10] * z + M[11];
+    // cov' = M3 C M3^T
+    const c = i * 6, xx = cov[c], xy = cov[c + 1], xz = cov[c + 2], yy = cov[c + 3], yz = cov[c + 4], zz = cov[c + 5];
+    const r = [M[0], M[1], M[2], M[4], M[5], M[6], M[8], M[9], M[10]];
+    const P = new Array(9);  // P = M3 C
+    for (let a = 0; a < 3; a++) {
+      const m0 = r[a * 3], m1 = r[a * 3 + 1], m2 = r[a * 3 + 2];
+      P[a * 3] = m0 * xx + m1 * xy + m2 * xz; P[a * 3 + 1] = m0 * xy + m1 * yy + m2 * yz; P[a * 3 + 2] = m0 * xz + m1 * yz + m2 * zz;
+    }
+    const q = (a, b) => P[a * 3] * r[b * 3] + P[a * 3 + 1] * r[b * 3 + 1] + P[a * 3 + 2] * r[b * 3 + 2];
+    wcov[c] = q(0, 0); wcov[c + 1] = q(0, 1); wcov[c + 2] = q(0, 2); wcov[c + 3] = q(1, 1); wcov[c + 4] = q(1, 2); wcov[c + 5] = q(2, 2);
+  }
+}
+
+function sortAndUpload() {
+  const { n, world, wcov, rgba, depth, order, cnt } = av;
+  const e = camera.matrixWorldInverse.elements;   // view-space z = row 2
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const d = e[2] * world[i * 3] + e[6] * world[i * 3 + 1] + e[10] * world[i * 3 + 2] + e[14];
+    depth[i] = d; if (d < lo) lo = d; if (d > hi) hi = d;
+  }
+  // counting sort, far (most negative z) first: back-to-front for normal alpha blending
+  cnt.fill(0);
+  const s = 65535 / Math.max(hi - lo, 1e-6), key = new Uint16Array(n);
+  for (let i = 0; i < n; i++) { key[i] = ((depth[i] - lo) * s) | 0; cnt[key[i]]++; }
+  for (let k = 1; k < 65536; k++) cnt[k] += cnt[k - 1];
+  for (let i = n - 1; i >= 0; i--) order[--cnt[key[i]]] = i;
+  const C = av.aC.array, A = av.aA.array, B = av.aB.array, K = av.aCol.array;
+  for (let j = 0; j < n; j++) {
+    const i = order[j];
+    C[j * 3] = world[i * 3]; C[j * 3 + 1] = world[i * 3 + 1]; C[j * 3 + 2] = world[i * 3 + 2];
+    A[j * 3] = wcov[i * 6]; A[j * 3 + 1] = wcov[i * 6 + 1]; A[j * 3 + 2] = wcov[i * 6 + 2];
+    B[j * 3] = wcov[i * 6 + 3]; B[j * 3 + 1] = wcov[i * 6 + 4]; B[j * 3 + 2] = wcov[i * 6 + 5];
+    K[j * 4] = rgba[i * 4] / 255; K[j * 4 + 1] = rgba[i * 4 + 1] / 255; K[j * 4 + 2] = rgba[i * 4 + 2] / 255; K[j * 4 + 3] = rgba[i * 4 + 3] / 255;
+  }
+  av.aC.needsUpdate = av.aA.needsUpdate = av.aB.needsUpdate = av.aCol.needsUpdate = true;
+}
+
+let skinned = -1;
+function tick(t) {
+  requestAnimationFrame(tick);
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== Math.round(w * renderer.getPixelRatio()) || canvas.height !== Math.round(h * renderer.getPixelRatio())) {
+    renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); dirty = true;
+  }
+  if (av) {
+    const dt = (t - lastT) / 1000; lastT = t;
+    if (playing) {
+      acc += dt;
+      const step = 1 / (av.hdr.replay_fps || 8);
+      while (acc > step) { acc -= step; frame = (frame + 1) % av.F; dirty = true; }
+    }
+    if (frame !== skinned) {
+      skin(frame); skinned = frame;
+      if (document.getElementById('follow').checked) {
+        let cx = 0, cy = 0;
+        for (let i = 0; i < av.n; i += 37) { cx += av.world[i * 3]; cy += av.world[i * 3 + 1]; }
+        const m = Math.ceil(av.n / 37), nx = cx / m, ny = cy / m;
+        const dx = nx - controls.target.x, dy = ny - controls.target.y;
+        controls.target.x += dx; controls.target.y += dy; camera.position.x += dx; camera.position.y += dy;
+      }
+      scrub.value = frame; fl.textContent = `${frame + 1} / ${av.F} (replay ${av.hdr.rig_frame[frame]})`;
+    }
+    controls.update();
+    camera.updateMatrixWorld();
+    if (dirty) {
+      sortAndUpload(); dirty = false;
+      const pr = renderer.getPixelRatio();
+      const fy = (h * pr) / 2 / Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+      mesh.material.uniforms.focal.value.set(fy, fy);
+      mesh.material.uniforms.viewport.value.set(w * pr, h * pr);
+    }
+  } else { controls.update(); }
+  renderer.render(scene, camera);
+}
+requestAnimationFrame(tick);
+
+async function loadUrl(base) {
+  const hdr = await (await fetch(base + '.json')).json();
+  const buf = await (await fetch(base + '.bin')).arrayBuffer();
+  setup(hdr, buf);
+}
+document.getElementById('files').onchange = async (e) => {
+  const fs = [...e.target.files];
+  const j = fs.find(f => f.name.endsWith('.json')), b = fs.find(f => f.name.endsWith('.bin'));
+  if (!j || !b) { info.textContent = 'pick both the .json and the .bin'; return; }
+  setup(JSON.parse(await j.text()), await b.arrayBuffer());
+};
+const src = new URLSearchParams(location.search).get('src') || 'demo/multicam_avatar';
+loadUrl(src).catch(err => { info.textContent = `could not load ${src}.json/.bin (${err.message}); use the file button`; });
+</script>
+</body>
+</html>
